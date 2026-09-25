@@ -11,13 +11,13 @@ Extensión para **[Forge Neo](https://github.com/Haoming02/sd-webui-forge-classi
 5. **Send to txt2img** / **img2img** vuelca el prompt.
 6. Muestra **hints de sampler** (Krea Turbo/RAW o Klein distilled/base) sin cambiar settings.
 
-Soportado: **Krea 2** y **FLUX.2 Klein 9B**. Otros stacks → aviso, sin fingir optimización.
+Soportado (perfil prosa/hints): **Krea 2** y **FLUX.2 Klein 9B**. Otros stacks → aviso.
 
-### Estado actual (v1)
+### Estado actual
 
-- Stub sin visión: el prompt sale de tus **notas** + perfil del stack (`StubProvider`).
-- `PromptProvider` listo para un VL/API después.
-
+- Caption con **Qwen3-VL-2B-Instruct** (~4 GB; cabe en 8 GB VRAM tras liberar el checkpoint).
+- 1ª Generate con imagen: descarga a `TextEncoders/Qwen3-VL-2B-Instruct/` con checklist + barra de progreso.
+- Sin imagen: stub con **Notas**.
 ## Requisitos
 
 - Forge Neo
@@ -73,9 +73,9 @@ Con **docker-neo** en la misma máquina: monta el repo vía `IMG2PROMPT_EXT_PATH
 | `tasks/plan.md` / `tasks/todo.md` | Plan y checklist |
 | `scripts/img2prompt.py` | Pestaña Gradio (`on_ui_tabs`) + send-to |
 | `forge_img2prompt/stack.py` | Detección Krea 2 / Klein / turbo / RAW |
-| `forge_img2prompt/provider.py` | `PromptProvider` + stub v1 |
-
-Para enchufar un backend real: implementa `PromptProvider` y sustituye `_PROVIDER` en `scripts/img2prompt.py`.
+| `forge_img2prompt/provider.py` | Stub + contrato `PromptProvider` |
+| `forge_img2prompt/vl_catalog.py` | Lista TE `*vl*` + mapeo HF Instruct |
+| `forge_img2prompt/vl_provider.py` | Caption Qwen*-VL + composite |
 
 ## Licencia
 

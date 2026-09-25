@@ -5,6 +5,7 @@ from typing import Protocol
 
 from PIL import Image
 
+from forge_img2prompt.log import log
 from forge_img2prompt.stack import StackInfo
 
 _TAG_SOUP_HINTS = (", masterpiece", "1girl,", "best quality,", "ultra detailed,")
@@ -111,7 +112,9 @@ class StubProvider:
 
     def generate(self, request: PromptRequest) -> PromptResult:
         stack = request.stack
+        log(f"StubProvider · stack={stack.summary}")
         if not stack.is_supported:
+            log("abort stub: stack no soportado")
             return PromptResult(
                 prompt="",
                 negative_hint="",
@@ -127,6 +130,7 @@ class StubProvider:
         img_info = _image_fingerprint(request.image)
 
         if not notes:
+            log(f"stub sin notas · {img_info}")
             return PromptResult(
                 prompt="",
                 negative_hint="",
@@ -144,6 +148,7 @@ class StubProvider:
             f"Prompt derivado de tus notas ({len(notes)} caracteres). "
             "La imagen aún no se captiona."
         )
+        log(f"stub OK · {len(prompt)} chars de prompt desde notas")
 
         return PromptResult(
             prompt=prompt,

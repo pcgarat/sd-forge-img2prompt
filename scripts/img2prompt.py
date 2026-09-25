@@ -1,4 +1,4 @@
-"""Image → Prompt tab for Forge Neo (Krea 2 / Klein 9B, stub provider)."""
+"""Image → Prompt tab for Forge Neo (Krea 2 / Klein 9B + Qwen3-VL-2B)."""
 
 from __future__ import annotations
 
@@ -7,11 +7,25 @@ from PIL import Image
 
 from modules import script_callbacks, scripts, shared
 
-from forge_img2prompt.provider import PromptRequest, StubProvider
+from forge_img2prompt.log import log
+from forge_img2prompt.provider import PromptRequest
 from forge_img2prompt.stack import detect_stack, pick_text_encoder
+from forge_img2prompt.vl_catalog import (
+    default_local_dir,
+    dropdown_choices,
+    is_local_ready,
+    list_vl_models,
+    preferred_value,
+    sole_model_choice,
+)
+from forge_img2prompt.vl_download import download_plan_markdown, format_download_plan, list_repo_files
+from forge_img2prompt.vl_provider import CompositeProvider
 
 EXT_DIR = scripts.basedir()
-_PROVIDER = StubProvider()
+log(f"extensión cargada · basedir={EXT_DIR}")
+_PROVIDER = CompositeProvider()
+_CATALOG = list_vl_models()
+log(f"catálogo VL: {_CATALOG[0].label if _CATALOG else 'vacío'}")
 
 
 def _opt(name: str, default=None):
@@ -26,7 +40,6 @@ def _forge_preset() -> str:
 
 
 def _checkpoint_name() -> str:
-    """Prefer the checkpoint bound to the active Forge UI preset (what the dropdown shows)."""
     preset = _forge_preset()
     if preset:
         keyed = _opt(f"forge_checkpoint_{preset}", None)
@@ -44,7 +57,6 @@ def _module_paths() -> list[str]:
         keyed = _opt("forge_additional_modules", None)
     if not keyed:
         return []
-    # Forge guarda lista; si llega string, no iterar caracteres.
     if isinstance(keyed, str):
         return [keyed] if keyed.strip() else []
     return [str(x) for x in keyed if x]
@@ -62,39 +74,46 @@ def _current_stack():
     )
 
 
-def _generate(image: Image.Image | None, notes: str):
+def _refresh_stack():
     stack = _current_stack()
-    result = _PROVIDER.generate(
-        PromptRequest(image=image, user_notes=notes or "", stack=stack)
-    )
-    hints = result.sampler_hints
-    if result.negative_hint:
-        hints = f"{hints}\n{result.negative_hint}".strip()
-    status = f"{stack.summary}\n{result.status}".strip()
-    return result.prompt, hints, status
+    flag = "soportado" if stack.is_supported else "no soportado / TE incompatible"
+    return f"**Stack:** `{stack.summary}` · {flag}"
 
 
 def on_ui_tabs():
+    log("registrando pestaña Image → Prompt")
+    pairs = dropdown_choices(_CATALOG)
+    default_vl = preferred_value(_CATALOG)
+    local = default_local_dir()
+
     with gr.Blocks(analytics_enabled=False) as ui:
         gr.Markdown(
             "## Image → Prompt (Krea 2 / Klein 9B)\n"
-            "Lee el **UI Preset** activo de Forge Neo (`forge_checkpoint_*` + módulos).\n\n"
-            "**v1 sin visión:** el prompt sale de **Notas**. "
-            "La imagen se reserva para un backend VL; subirla sola no cambia el caption."
+            "Caption con **Qwen3-VL-2B-Instruct** (~5 GB VRAM; cabe en RTX 4060 8 GB "
+            "tras liberar el checkpoint). La **primera** Generate con imagen descarga el "
+            f"modelo a `{local}`.\n\n"
+            "Sin imagen → stub solo con **Notas**."
         )
         with gr.Row():
             with gr.Column(scale=1):
                 image = gr.Image(
-                    label="Imagen (opcional en v1)",
+                    label="Imagen",
                     type="pil",
                     sources=["upload", "clipboard"],
-                    height=360,
+                    height=320,
                 )
                 notes = gr.Textbox(
-                    label="Notas / descripción",
-                    lines=4,
-                    placeholder="Ej: retrato de mujer con chaqueta roja bajo lluvia neon, luz magenta…",
+                    label="Notas / descripción (opcional)",
+                    lines=3,
+                    placeholder="Ej: prioriza la chaqueta roja; tono noir…",
                 )
+                vl_dd = gr.Dropdown(
+                    label="Modelo VL (único por ahora)",
+                    choices=pairs,
+                    value=default_vl,
+                    interactive=False,
+                )
+                download_plan = gr.Markdown(value=download_plan_markdown(local))
                 with gr.Row():
                     generate_btn = gr.Button("Generate", variant="primary")
                     refresh_btn = gr.Button("Refresh stack")
@@ -111,18 +130,117 @@ def on_ui_tabs():
                     send_t2i = gr.Button("Send to txt2img")
                     send_i2i = gr.Button("Send to img2img")
 
-        def _refresh_stack():
+        def _generate_with_plan(img: Image.Image | None, notes_val: str, vl_value: str, progress=gr.Progress(track_tqdm=True)):
+            from huggingface_hub import hf_hub_download
+
             stack = _current_stack()
-            flag = "soportado" if stack.is_supported else "no soportado / TE incompatible"
-            return f"**Stack:** `{stack.summary}` · {flag}"
+            choice = sole_model_choice()
+            dest = default_local_dir()
+            dest.mkdir(parents=True, exist_ok=True)
+
+            yield (
+                "",
+                "",
+                f"**Stack:** `{stack.summary}`\n\nPreparando…",
+                download_plan_markdown(dest),
+            )
+
+            if img is not None and not is_local_ready(dest):
+                try:
+                    items = list_repo_files(choice.hf_id)
+                except Exception as exc:  # noqa: BLE001
+                    yield "", "", f"No se pudo listar HF: {exc}", download_plan_markdown(dest)
+                    return
+
+                done: set[str] = set()
+                for it in items:
+                    target = dest / it.filename
+                    if target.is_file() and target.stat().st_size > 0:
+                        done.add(it.filename)
+
+                yield (
+                    "",
+                    "",
+                    f"**Stack:** `{stack.summary}`\n\nDescargando {len(items)} ficheros…",
+                    format_download_plan(items, dest, done=done),
+                )
+
+                total = max(len(items), 1)
+                for it in items:
+                    if it.filename in done:
+                        continue
+                    frac = len(done) / total
+                    progress(frac * 0.7, desc=f"[{len(done)+1}/{total}] {it.filename} ({it.size_label})")
+                    yield (
+                        "",
+                        "",
+                        f"⬇️ `{it.filename}` ({it.size_label})",
+                        format_download_plan(items, dest, done=done, current=it.filename),
+                    )
+                    try:
+                        hf_hub_download(
+                            repo_id=choice.hf_id,
+                            filename=it.filename,
+                            local_dir=str(dest),
+                            local_dir_use_symlinks=False,
+                            resume_download=True,
+                        )
+                    except Exception as exc:  # noqa: BLE001
+                        yield (
+                            "",
+                            "",
+                            f"Error descargando `{it.filename}`: {exc}",
+                            format_download_plan(items, dest, done=done, current=it.filename),
+                        )
+                        return
+                    done.add(it.filename)
+                    yield (
+                        "",
+                        "",
+                        f"✅ `{it.filename}`",
+                        format_download_plan(items, dest, done=done),
+                    )
+
+                if not is_local_ready(dest):
+                    yield (
+                        "",
+                        "",
+                        f"Descarga incompleta en `{dest}`",
+                        format_download_plan(items, dest, done=done),
+                    )
+                    return
+
+                yield (
+                    "",
+                    "",
+                    f"**Stack:** `{stack.summary}`\n\nDescarga completa. Caption…",
+                    download_plan_markdown(dest),
+                )
+
+            progress(0.72, desc="Caption VL…")
+
+            def on_prog_cap(frac: float, desc: str) -> None:
+                progress(0.72 + 0.28 * frac, desc=desc)
+
+            result = _PROVIDER.generate(
+                PromptRequest(image=img, user_notes=notes_val or "", stack=stack),
+                vl_value=vl_value or choice.value,
+                progress=on_prog_cap,
+            )
+            hints = result.sampler_hints
+            if result.negative_hint:
+                hints = f"{hints}\n{result.negative_hint}".strip()
+            status = f"{stack.summary}\n{result.status}".strip()
+            yield result.prompt, hints, status, download_plan_markdown(dest)
 
         generate_btn.click(
-            fn=_generate,
-            inputs=[image, notes],
-            outputs=[prompt_out, hints_out, status_out],
+            fn=_generate_with_plan,
+            inputs=[image, notes, vl_dd],
+            outputs=[prompt_out, hints_out, status_out, download_plan],
         )
         refresh_btn.click(fn=_refresh_stack, inputs=[], outputs=[status_out])
         ui.load(fn=_refresh_stack, inputs=[], outputs=[status_out])
+        ui.load(fn=lambda: download_plan_markdown(default_local_dir()), inputs=[], outputs=[download_plan])
 
         try:
             from modules import infotext_utils as send
@@ -142,9 +260,12 @@ def on_ui_tabs():
                 )
             )
         except Exception as exc:  # noqa: BLE001
+            log(f"Send-to no disponible (infotext_utils): {exc}")
             gr.Markdown(f"Send-to no disponible (`infotext_utils`: {exc}). Usa el botón copiar del prompt.")
 
+    log("pestaña Image → Prompt lista")
     return [(ui, "Image → Prompt", "img2prompt_tab")]
 
 
 script_callbacks.on_ui_tabs(on_ui_tabs)
+log("callback on_ui_tabs registrado")
