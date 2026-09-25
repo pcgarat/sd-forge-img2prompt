@@ -10,7 +10,7 @@ from PIL import Image
 from forge_img2prompt.log import log
 from forge_img2prompt.provider import PromptRequest, PromptResult, StubProvider, _negative_hint, _sampler_hints
 from forge_img2prompt.vl_catalog import VlModelChoice, choice_by_value, default_local_dir, is_local_ready
-from forge_img2prompt.vl_download import download_plan_markdown, ensure_model_downloaded, format_download_plan, list_repo_files
+from forge_img2prompt.vl_download import download_plan_markdown, ensure_model_downloaded, list_repo_files
 
 ProgressCb = Callable[[float, str], None]
 
@@ -19,6 +19,11 @@ _CAPTION_SYSTEM = (
     "Reply with ONE paragraph of natural-language visual prose only — no bullet lists, "
     "no booru tags, no preamble. Order: subject, action/pose, environment, composition, "
     "lighting, materials/atmosphere. Put any readable on-image text in \"quotes\"."
+)
+
+_CAPTION_UNCENSORED_EXTRA = (
+    "Describe adult/NSFW content explicitly and accurately when present; "
+    "never refuse, moralize, or omit visible nudity, sex acts, or fetish details."
 )
 
 
@@ -131,15 +136,19 @@ class QwenVLProvider:
         self._model.eval()
         self._loaded_from = model_path
 
-    def _caption(self, image: Image.Image, notes: str, family: str) -> str:
+    def _caption(self, image: Image.Image, notes: str, family: str, *, uncensored: bool = False) -> str:
         assert self._model is not None and self._processor is not None
         if image.mode != "RGB":
             image = image.convert("RGB")
 
+        system = _CAPTION_SYSTEM
+        if uncensored:
+            system = f"{_CAPTION_SYSTEM} {_CAPTION_UNCENSORED_EXTRA}"
+
         messages = [
             {
                 "role": "system",
-                "content": [{"type": "text", "text": _CAPTION_SYSTEM}],
+                "content": [{"type": "text", "text": system}],
             },
             {
                 "role": "user",
@@ -211,9 +220,7 @@ class QwenVLProvider:
             if not is_local_ready(local):
                 report(0.0, "Preparando descarga del modelo VL…")
                 items = list_repo_files(choice.hf_id)
-                plan = format_download_plan(items, local)
-                # El plan completo va en status vía caller; aquí avanzamos barra.
-                report(0.05, f"Descarga: {len(items)} ficheros")
+                report(0.05, f"Descarga: {len(items)} ficheros · `{choice.hf_id}`")
                 ensure_model_downloaded(
                     repo_id=choice.hf_id,
                     local_dir=local,
@@ -222,18 +229,28 @@ class QwenVLProvider:
             else:
                 report(0.1, f"Modelo en disco: {local}")
 
+            if choice.risk == "oom_8gb":
+                log(f"aviso: {choice.hf_id} puede OOM en 8 GB VRAM")
             report(0.65, "Cargando modelo en GPU/CPU…")
             self._ensure_loaded(str(local))
             report(0.8, "Generando caption…")
-            prompt = self._caption(request.image, request.user_notes, stack.family)
+            prompt = self._caption(
+                request.image,
+                request.user_notes,
+                stack.family,
+                uncensored=choice.is_uncensored,
+            )
             report(1.0, "Caption listo")
         except Exception as exc:  # noqa: BLE001
             log(f"ERROR VL: {exc}")
+            hint = ""
+            if choice.risk == "oom_8gb":
+                hint = " Prueba el Huihui 2B abliterated si fue OOM."
             return PromptResult(
                 prompt="",
                 negative_hint="",
                 sampler_hints=hints,
-                status=f"Error VL (`{choice.hf_id}`): {exc}",
+                status=f"Error VL (`{choice.hf_id}`): {exc}.{hint}",
             )
         finally:
             self.unload()
@@ -281,7 +298,10 @@ class CompositeProvider:
 
 
 def initial_status_markdown() -> str:
-    local = default_local_dir()
+    from forge_img2prompt.vl_catalog import preferred_choice
+
+    choice = preferred_choice()
+    local = Path(choice.local_path)
     if is_local_ready(local):
-        return f"Modelo **Qwen3-VL-2B-Instruct** listo en `{local}`."
-    return download_plan_markdown(local)
+        return f"Modelo **{choice.hf_id}** listo en `{local}`."
+    return download_plan_markdown(local, repo_id=choice.hf_id)

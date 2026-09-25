@@ -1,6 +1,8 @@
-"""Image → Prompt tab for Forge Neo (Krea 2 / Klein 9B + Qwen3-VL-2B)."""
+"""Image → Prompt tab for Forge Neo (Krea 2 / Klein 9B + Qwen3-VL)."""
 
 from __future__ import annotations
+
+from pathlib import Path
 
 import gradio as gr
 from PIL import Image
@@ -11,12 +13,11 @@ from forge_img2prompt.log import log
 from forge_img2prompt.provider import PromptRequest
 from forge_img2prompt.stack import detect_stack, pick_text_encoder
 from forge_img2prompt.vl_catalog import (
-    default_local_dir,
+    choice_by_value,
     dropdown_choices,
     is_local_ready,
     list_vl_models,
     preferred_value,
-    sole_model_choice,
 )
 from forge_img2prompt.vl_download import download_plan_markdown, format_download_plan, list_repo_files
 from forge_img2prompt.vl_provider import CompositeProvider
@@ -25,7 +26,7 @@ EXT_DIR = scripts.basedir()
 log(f"extensión cargada · basedir={EXT_DIR}")
 _PROVIDER = CompositeProvider()
 _CATALOG = list_vl_models()
-log(f"catálogo VL: {_CATALOG[0].label if _CATALOG else 'vacío'}")
+log(f"catálogo VL: {len(_CATALOG)} modelos · preferido={_CATALOG[0].hf_id if _CATALOG else '?'}")
 
 
 def _opt(name: str, default=None):
@@ -80,18 +81,25 @@ def _refresh_stack():
     return f"**Stack:** `{stack.summary}` · {flag}"
 
 
+def _plan_for_value(vl_value: str) -> str:
+    choice = choice_by_value(vl_value, _CATALOG)
+    assert choice is not None
+    dest = Path(choice.local_path)
+    return download_plan_markdown(dest, repo_id=choice.hf_id)
+
+
 def on_ui_tabs():
     log("registrando pestaña Image → Prompt")
     pairs = dropdown_choices(_CATALOG)
     default_vl = preferred_value(_CATALOG)
-    local = default_local_dir()
 
     with gr.Blocks(analytics_enabled=False) as ui:
         gr.Markdown(
             "## Image → Prompt (Krea 2 / Klein 9B)\n"
-            "Caption con **Qwen3-VL-2B-Instruct** (~5 GB VRAM; cabe en RTX 4060 8 GB "
-            "tras liberar el checkpoint). La **primera** Generate con imagen descarga el "
-            f"modelo a `{local}`.\n\n"
+            "Caption con **Qwen3-VL** (transformers). En RTX 4060 8 GB elige "
+            "**Huihui 2B abliterated** (uncensor, ~5 GB VRAM). El **4B** mejora "
+            "calidad pero puede OOM. La **primera** Generate con imagen descarga "
+            "el modelo seleccionado a `TextEncoders/<nombre>/`.\n\n"
             "Sin imagen → stub solo con **Notas**."
         )
         with gr.Row():
@@ -108,12 +116,12 @@ def on_ui_tabs():
                     placeholder="Ej: prioriza la chaqueta roja; tono noir…",
                 )
                 vl_dd = gr.Dropdown(
-                    label="Modelo VL (único por ahora)",
+                    label="Modelo VL",
                     choices=pairs,
                     value=default_vl,
-                    interactive=False,
+                    interactive=True,
                 )
-                download_plan = gr.Markdown(value=download_plan_markdown(local))
+                download_plan = gr.Markdown(value=_plan_for_value(default_vl))
                 with gr.Row():
                     generate_btn = gr.Button("Generate", variant="primary")
                     refresh_btn = gr.Button("Refresh stack")
@@ -134,22 +142,28 @@ def on_ui_tabs():
             from huggingface_hub import hf_hub_download
 
             stack = _current_stack()
-            choice = sole_model_choice()
-            dest = default_local_dir()
+            choice = choice_by_value(vl_value, _CATALOG)
+            assert choice is not None
+            dest = Path(choice.local_path)
             dest.mkdir(parents=True, exist_ok=True)
 
             yield (
                 "",
                 "",
-                f"**Stack:** `{stack.summary}`\n\nPreparando…",
-                download_plan_markdown(dest),
+                f"**Stack:** `{stack.summary}`\n\nPreparando `{choice.hf_id}`…",
+                download_plan_markdown(dest, repo_id=choice.hf_id),
             )
 
             if img is not None and not is_local_ready(dest):
                 try:
                     items = list_repo_files(choice.hf_id)
                 except Exception as exc:  # noqa: BLE001
-                    yield "", "", f"No se pudo listar HF: {exc}", download_plan_markdown(dest)
+                    yield (
+                        "",
+                        "",
+                        f"No se pudo listar HF (`{choice.hf_id}`): {exc}",
+                        download_plan_markdown(dest, repo_id=choice.hf_id),
+                    )
                     return
 
                 done: set[str] = set()
@@ -161,8 +175,8 @@ def on_ui_tabs():
                 yield (
                     "",
                     "",
-                    f"**Stack:** `{stack.summary}`\n\nDescargando {len(items)} ficheros…",
-                    format_download_plan(items, dest, done=done),
+                    f"**Stack:** `{stack.summary}`\n\nDescargando {len(items)} ficheros de `{choice.hf_id}`…",
+                    format_download_plan(items, dest, repo_id=choice.hf_id, done=done),
                 )
 
                 total = max(len(items), 1)
@@ -175,7 +189,9 @@ def on_ui_tabs():
                         "",
                         "",
                         f"⬇️ `{it.filename}` ({it.size_label})",
-                        format_download_plan(items, dest, done=done, current=it.filename),
+                        format_download_plan(
+                            items, dest, repo_id=choice.hf_id, done=done, current=it.filename
+                        ),
                     )
                     try:
                         hf_hub_download(
@@ -190,7 +206,9 @@ def on_ui_tabs():
                             "",
                             "",
                             f"Error descargando `{it.filename}`: {exc}",
-                            format_download_plan(items, dest, done=done, current=it.filename),
+                            format_download_plan(
+                                items, dest, repo_id=choice.hf_id, done=done, current=it.filename
+                            ),
                         )
                         return
                     done.add(it.filename)
@@ -198,7 +216,7 @@ def on_ui_tabs():
                         "",
                         "",
                         f"✅ `{it.filename}`",
-                        format_download_plan(items, dest, done=done),
+                        format_download_plan(items, dest, repo_id=choice.hf_id, done=done),
                     )
 
                 if not is_local_ready(dest):
@@ -206,7 +224,7 @@ def on_ui_tabs():
                         "",
                         "",
                         f"Descarga incompleta en `{dest}`",
-                        format_download_plan(items, dest, done=done),
+                        format_download_plan(items, dest, repo_id=choice.hf_id, done=done),
                     )
                     return
 
@@ -214,7 +232,7 @@ def on_ui_tabs():
                     "",
                     "",
                     f"**Stack:** `{stack.summary}`\n\nDescarga completa. Caption…",
-                    download_plan_markdown(dest),
+                    download_plan_markdown(dest, repo_id=choice.hf_id),
                 )
 
             progress(0.72, desc="Caption VL…")
@@ -224,15 +242,16 @@ def on_ui_tabs():
 
             result = _PROVIDER.generate(
                 PromptRequest(image=img, user_notes=notes_val or "", stack=stack),
-                vl_value=vl_value or choice.value,
+                vl_value=choice.value,
                 progress=on_prog_cap,
             )
             hints = result.sampler_hints
             if result.negative_hint:
                 hints = f"{hints}\n{result.negative_hint}".strip()
             status = f"{stack.summary}\n{result.status}".strip()
-            yield result.prompt, hints, status, download_plan_markdown(dest)
+            yield result.prompt, hints, status, download_plan_markdown(dest, repo_id=choice.hf_id)
 
+        vl_dd.change(fn=_plan_for_value, inputs=[vl_dd], outputs=[download_plan])
         generate_btn.click(
             fn=_generate_with_plan,
             inputs=[image, notes, vl_dd],
@@ -240,7 +259,7 @@ def on_ui_tabs():
         )
         refresh_btn.click(fn=_refresh_stack, inputs=[], outputs=[status_out])
         ui.load(fn=_refresh_stack, inputs=[], outputs=[status_out])
-        ui.load(fn=lambda: download_plan_markdown(default_local_dir()), inputs=[], outputs=[download_plan])
+        ui.load(fn=lambda: _plan_for_value(preferred_value(_CATALOG)), inputs=[], outputs=[download_plan])
 
         try:
             from modules import infotext_utils as send

@@ -53,12 +53,13 @@ def format_download_plan(
     items: list[DownloadItem],
     local_dir: Path,
     *,
+    repo_id: str = DEFAULT_HF_ID,
     done: set[str] | None = None,
     current: str | None = None,
 ) -> str:
     done = done or set()
     lines = [
-        f"**Descarga** `{DEFAULT_HF_ID}` → `{local_dir}`",
+        f"**Descarga** `{repo_id}` → `{local_dir}`",
         f"Total estimado: **{_fmt_total(items)}** · {len(items)} fichero(s)",
         "",
     ]
@@ -110,7 +111,7 @@ def ensure_model_downloaded(
 
     def push_plan(current: str | None = None) -> None:
         if plan_update:
-            plan_update(format_download_plan(items, dest, done=done, current=current))
+            plan_update(format_download_plan(items, dest, repo_id=repo_id, done=done, current=current))
 
     push_plan()
     report(0.05, f"Plan: {len(items)} ficheros · {_fmt_total(items)} · pendientes={len(pending)}")
@@ -122,7 +123,7 @@ def ensure_model_downloaded(
     from huggingface_hub import hf_hub_download
 
     total = max(len(items), 1)
-    for idx, it in enumerate(items):
+    for it in items:
         if it.filename in done:
             continue
         frac = 0.05 + 0.9 * (len(done) / total)
@@ -149,14 +150,19 @@ def ensure_model_downloaded(
     return dest
 
 
-def download_plan_markdown(local_dir: Path | None = None) -> str:
+def download_plan_markdown(
+    local_dir: Path | None = None,
+    *,
+    repo_id: str = DEFAULT_HF_ID,
+) -> str:
     dest = Path(local_dir) if local_dir else default_local_dir()
     if is_local_ready(dest):
         return f"Modelo listo en `{dest}`."
     try:
-        return format_download_plan(list_repo_files(), dest)
+        return format_download_plan(list_repo_files(repo_id), dest, repo_id=repo_id)
     except Exception as exc:  # noqa: BLE001
         return (
-            f"Modelo **aún no descargado** → `{dest}`.\n\n"
+            f"Modelo **aún no descargado** → `{dest}`\n"
+            f"Repo: `{repo_id}`\n\n"
             f"(No se pudo listar HF ahora: {exc}. Al pulsar Generate se reintentará.)"
         )

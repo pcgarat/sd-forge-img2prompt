@@ -15,9 +15,13 @@ Soportado (perfil prosa/hints): **Krea 2** y **FLUX.2 Klein 9B**. Otros stacks �
 
 ### Estado actual
 
-- Caption con **Qwen3-VL-2B-Instruct** (~4 GB; cabe en 8 GB VRAM tras liberar el checkpoint).
-- 1ª Generate con imagen: descarga a `TextEncoders/Qwen3-VL-2B-Instruct/` con checklist + barra de progreso.
+- Selector VL con 3 Instruct (transformers, descarga a `TextEncoders/<nombre>/`):
+  - **Huihui 2B abliterated** (recomendado en 8 GB; uncensor)
+  - **Qwen3-VL-2B-Instruct** oficial
+  - **Huihui 4B abliterated** (mejor calidad; riesgo OOM en 8 GB)
+- 1ª Generate con imagen: checklist + barra de progreso del modelo elegido.
 - Sin imagen: stub con **Notas**.
+
 ## Requisitos
 
 - Forge Neo
@@ -74,7 +78,7 @@ Con **docker-neo** en la misma máquina: monta el repo vía `IMG2PROMPT_EXT_PATH
 | `scripts/img2prompt.py` | Pestaña Gradio (`on_ui_tabs`) + send-to |
 | `forge_img2prompt/stack.py` | Detección Krea 2 / Klein / turbo / RAW |
 | `forge_img2prompt/provider.py` | Stub + contrato `PromptProvider` |
-| `forge_img2prompt/vl_catalog.py` | Lista TE `*vl*` + mapeo HF Instruct |
+| `forge_img2prompt/vl_catalog.py` | Catálogo VL Instruct (oficial + Huihui abliterated) |
 | `forge_img2prompt/vl_provider.py` | Caption Qwen*-VL + composite |
 
 ## Licencia
