@@ -65,11 +65,17 @@ cd sd-forge-img2prompt
 python -m pytest tests -q
 ```
 
+Con **docker-neo** en la misma máquina: monta el repo vía `IMG2PROMPT_EXT_PATH` (compose) y `make restart`. No uses symlink dentro de `EXTENSIONS_PATH` — el contenedor no ve rutas fuera de `/data`.
+
 | Ruta | Rol |
 |------|-----|
+| `docs/spec-forge-neo-img2prompt_25-09-2026.md` | Spec v1 |
+| `tasks/plan.md` / `tasks/todo.md` | Plan y checklist |
 | `scripts/img2prompt.py` | Pestaña Gradio (`on_ui_tabs`) + send-to |
-| `forge_img2prompt/stack.py` | Detección Krea 2 / turbo / RAW |
+| `forge_img2prompt/stack.py` | Detección Krea 2 / Klein / turbo / RAW |
 | `forge_img2prompt/provider.py` | `PromptProvider` + stub v1 |
+
+Para enchufar un backend real: implementa `PromptProvider` y sustituye `_PROVIDER` en `scripts/img2prompt.py`.
 
 ## Licencia
 

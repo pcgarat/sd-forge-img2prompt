@@ -37,12 +37,17 @@ def _checkpoint_name() -> str:
 
 def _module_paths() -> list[str]:
     preset = _forge_preset()
+    keyed = None
     if preset:
         keyed = _opt(f"forge_additional_modules_{preset}", None)
-        if keyed:
-            return [str(x) for x in keyed]
-    modules = _opt("forge_additional_modules", None) or []
-    return [str(x) for x in modules]
+    if keyed is None:
+        keyed = _opt("forge_additional_modules", None)
+    if not keyed:
+        return []
+    # Forge guarda lista; si llega string, no iterar caracteres.
+    if isinstance(keyed, str):
+        return [keyed] if keyed.strip() else []
+    return [str(x) for x in keyed if x]
 
 
 def _text_encoder_name() -> str:
@@ -73,25 +78,26 @@ def on_ui_tabs():
     with gr.Blocks(analytics_enabled=False) as ui:
         gr.Markdown(
             "## Image → Prompt (Krea 2 / Klein 9B)\n"
-            "Lee el **UI Preset** activo de Forge Neo.\n\n"
-            "**v1 sin visión:** el prompt sale de **Notas** (cambia si cambias las notas). "
-            "Subir solo la imagen **no** genera un caption distinto — hace falta describir "
-            "la escena hasta que haya backend VL."
+            "Lee el **UI Preset** activo de Forge Neo (`forge_checkpoint_*` + módulos).\n\n"
+            "**v1 sin visión:** el prompt sale de **Notas**. "
+            "La imagen se reserva para un backend VL; subirla sola no cambia el caption."
         )
         with gr.Row():
             with gr.Column(scale=1):
                 image = gr.Image(
-                    label="Imagen",
+                    label="Imagen (opcional en v1)",
                     type="pil",
                     sources=["upload", "clipboard"],
                     height=360,
                 )
                 notes = gr.Textbox(
-                    label="Notas / descripción (obligatorio en v1)",
+                    label="Notas / descripción",
                     lines=4,
                     placeholder="Ej: retrato de mujer con chaqueta roja bajo lluvia neon, luz magenta…",
                 )
-                generate_btn = gr.Button("Generate", variant="primary")
+                with gr.Row():
+                    generate_btn = gr.Button("Generate", variant="primary")
+                    refresh_btn = gr.Button("Refresh stack")
             with gr.Column(scale=1):
                 prompt_out = gr.Textbox(
                     label="Prompt",
@@ -105,11 +111,18 @@ def on_ui_tabs():
                     send_t2i = gr.Button("Send to txt2img")
                     send_i2i = gr.Button("Send to img2img")
 
+        def _refresh_stack():
+            stack = _current_stack()
+            flag = "soportado" if stack.is_supported else "no soportado / TE incompatible"
+            return f"**Stack:** `{stack.summary}` · {flag}"
+
         generate_btn.click(
             fn=_generate,
             inputs=[image, notes],
             outputs=[prompt_out, hints_out, status_out],
         )
+        refresh_btn.click(fn=_refresh_stack, inputs=[], outputs=[status_out])
+        ui.load(fn=_refresh_stack, inputs=[], outputs=[status_out])
 
         try:
             from modules import infotext_utils as send
