@@ -58,28 +58,56 @@ def _looks_like_tag_soup(text: str) -> bool:
     return any(h in low for h in _TAG_SOUP_HINTS)
 
 
-def _notes_to_prose(notes: str) -> str:
-    text = " ".join(notes.split()).strip().strip('"')
+def _normalize_notes(notes: str) -> str:
+    return " ".join((notes or "").split()).strip().strip('"')
+
+
+def _notes_to_prose(notes: str, family: str) -> str:
+    """Turn user notes into natural-language prose. Empty notes → empty string."""
+    text = _normalize_notes(notes)
     if not text:
-        return (
-            "A clear photograph of the main subject centered in frame, natural lighting, "
-            'realistic materials and colors. If text appears in the image, put exact words in "quotes".'
-        )
+        return ""
+
     if _looks_like_tag_soup(text):
+        core = text.replace(",", ", ")
         return (
-            f"A detailed scene described as: {text.replace(',', ', ')}. "
-            "Render as coherent natural-language imagery with explicit composition, lighting, "
-            "and materials rather than a keyword list."
+            f"A detailed scene: {core}. "
+            "Describe the subject first, then environment, composition, lighting, materials and mood "
+            "in connected prose — not a keyword list."
         )
+
     if text[0].islower():
         text = text[0].upper() + text[1:]
     if text[-1] not in ".!?":
         text += "."
-    return text
+
+    # Light family-specific framing so the same notes are not a bare echo.
+    if family == "klein9b":
+        return (
+            f"{text} "
+            "Keep spatial relationships explicit; prefer concrete nouns, lighting direction, "
+            'and materials. Put any on-image text in "quotes".'
+        )
+    return (
+        f"{text} "
+        "Emphasize composition, lighting, materials and atmosphere in natural language. "
+        'Put any on-image text in "quotes".'
+    )
+
+
+def _image_fingerprint(image: Image.Image | None) -> str:
+    if image is None:
+        return "sin imagen"
+    try:
+        w, h = image.size
+        mode = image.mode
+        return f"imagen {w}×{h} {mode}"
+    except Exception:
+        return "imagen (metadatos no legibles)"
 
 
 class StubProvider:
-    """No vision backend; reshapes user notes into prose for Krea 2 / Klein 9B."""
+    """No vision backend: prompt comes only from user notes (+ stack profile)."""
 
     def generate(self, request: PromptRequest) -> PromptResult:
         stack = request.stack
@@ -94,13 +122,28 @@ class StubProvider:
                 ),
             )
 
-        prompt = _notes_to_prose(request.user_notes)
+        notes = _normalize_notes(request.user_notes)
         label = "Krea 2" if stack.family == "krea2" else "Klein 9B"
-        status = f"Stub {label} ({stack.variant})."
-        if request.image is not None:
-            status += " Imagen recibida (caption real pendiente de backend)."
-        if not request.user_notes.strip():
-            status += " Sin notas: plantilla mínima; edítala antes de generar."
+        img_info = _image_fingerprint(request.image)
+
+        if not notes:
+            return PromptResult(
+                prompt="",
+                negative_hint="",
+                sampler_hints=_sampler_hints(stack.family, stack.variant),
+                status=(
+                    f"Stub {label} ({stack.variant}) · {img_info}. "
+                    "v1 **no analiza la imagen**: escribe en Notas qué ves / quieres reproducir "
+                    "y pulsa Generate de nuevo. El caption automático llegará con el backend."
+                ),
+            )
+
+        prompt = _notes_to_prose(notes, stack.family)
+        status = (
+            f"Stub {label} ({stack.variant}) · {img_info}. "
+            f"Prompt derivado de tus notas ({len(notes)} caracteres). "
+            "La imagen aún no se captiona."
+        )
 
         return PromptResult(
             prompt=prompt,

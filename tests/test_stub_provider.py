@@ -22,7 +22,16 @@ def test_stub_rewrites_notes_to_prose():
     assert "teapot" in result.prompt.lower()
     assert result.prompt[0].isupper()
     assert "8 steps" in result.sampler_hints or "Turbo" in result.sampler_hints
-    assert result.status
+    assert "notas" in result.status.lower() or "caracteres" in result.status.lower()
+
+
+def test_different_notes_produce_different_prompts():
+    provider = StubProvider()
+    a = provider.generate(PromptRequest(None, "a blue sports car at dusk", _krea())).prompt
+    b = provider.generate(PromptRequest(None, "an old wooden cabin in snow", _krea())).prompt
+    assert a != b
+    assert "sports car" in a.lower()
+    assert "cabin" in b.lower()
 
 
 def test_stub_klein_hints():
@@ -43,10 +52,11 @@ def test_stub_avoids_claiming_optimization_when_unsupported():
     assert "no reconocido" in result.status.lower() or "No se genera" in result.status
 
 
-def test_stub_empty_notes_uses_template():
+def test_stub_empty_notes_no_fake_prompt():
     provider = StubProvider()
     result = provider.generate(PromptRequest(image=None, user_notes="  ", stack=_krea("krea2_raw.safetensors")))
-    assert "subject" in result.prompt.lower() or "photograph" in result.prompt.lower()
+    assert result.prompt == ""
+    assert "no analiza" in result.status.lower() or "Notas" in result.status
     assert "RAW" in result.sampler_hints or "28" in result.sampler_hints
 
 
@@ -54,4 +64,4 @@ def test_stub_softens_tag_soup():
     provider = StubProvider()
     notes = "1girl, solo, long hair, masterpiece, best quality, cyberpunk, neon, city, rain"
     result = provider.generate(PromptRequest(image=None, user_notes=notes, stack=_krea()))
-    assert "natural-language" in result.prompt.lower() or "coherent" in result.prompt.lower()
+    assert "natural language" in result.prompt.lower() or "prose" in result.prompt.lower() or "keyword" in result.prompt.lower()

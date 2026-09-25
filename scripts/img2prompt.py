@@ -73,9 +73,10 @@ def on_ui_tabs():
     with gr.Blocks(analytics_enabled=False) as ui:
         gr.Markdown(
             "## Image → Prompt (Krea 2 / Klein 9B)\n"
-            "Lee el **UI Preset** activo de Forge Neo (`forge_checkpoint_<preset>`), "
-            "no solo `sd_model_checkpoint` (puede quedar desfasado).\n\n"
-            "v1 stub: usa **notas** + stack. La imagen queda para un backend futuro."
+            "Lee el **UI Preset** activo de Forge Neo.\n\n"
+            "**v1 sin visión:** el prompt sale de **Notas** (cambia si cambias las notas). "
+            "Subir solo la imagen **no** genera un caption distinto — hace falta describir "
+            "la escena hasta que haya backend VL."
         )
         with gr.Row():
             with gr.Column(scale=1):
@@ -86,9 +87,9 @@ def on_ui_tabs():
                     height=360,
                 )
                 notes = gr.Textbox(
-                    label="Notas / descripción",
+                    label="Notas / descripción (obligatorio en v1)",
                     lines=4,
-                    placeholder="Sujeto, entorno, luz, estilo… (prosa o frases cortas)",
+                    placeholder="Ej: retrato de mujer con chaqueta roja bajo lluvia neon, luz magenta…",
                 )
                 generate_btn = gr.Button("Generate", variant="primary")
             with gr.Column(scale=1):
