@@ -1,46 +1,60 @@
-"""Image → Prompt tab for Forge Neo (Krea 2 v1, stub provider)."""
+"""Image → Prompt tab for Forge Neo (Krea 2 / Klein 9B, stub provider)."""
 
 from __future__ import annotations
 
 import gradio as gr
 from PIL import Image
 
-from modules import script_callbacks, scripts, sd_models, shared
+from modules import script_callbacks, scripts, shared
 
 from forge_img2prompt.provider import PromptRequest, StubProvider
-from forge_img2prompt.stack import detect_stack
+from forge_img2prompt.stack import detect_stack, pick_text_encoder
 
 EXT_DIR = scripts.basedir()
 _PROVIDER = StubProvider()
 
 
-def _checkpoint_name() -> str:
-    try:
-        info = sd_models.model_data.sd_model or getattr(shared, "sd_model", None)
-        if info is not None and getattr(info, "sd_model_checkpoint", None):
-            return str(info.sd_model_checkpoint)
-    except Exception:
-        pass
+def _opt(name: str, default=None):
     opts = getattr(shared, "opts", None)
-    if opts is not None:
-        return str(getattr(opts, "sd_model_checkpoint", "") or "")
-    return ""
+    if opts is None:
+        return default
+    return getattr(opts, name, default)
+
+
+def _forge_preset() -> str:
+    return str(_opt("forge_preset", "") or "").strip()
+
+
+def _checkpoint_name() -> str:
+    """Prefer the checkpoint bound to the active Forge UI preset (what the dropdown shows)."""
+    preset = _forge_preset()
+    if preset:
+        keyed = _opt(f"forge_checkpoint_{preset}", None)
+        if keyed:
+            return str(keyed)
+    return str(_opt("sd_model_checkpoint", "") or "")
+
+
+def _module_paths() -> list[str]:
+    preset = _forge_preset()
+    if preset:
+        keyed = _opt(f"forge_additional_modules_{preset}", None)
+        if keyed:
+            return [str(x) for x in keyed]
+    modules = _opt("forge_additional_modules", None) or []
+    return [str(x) for x in modules]
 
 
 def _text_encoder_name() -> str:
-    opts = getattr(shared, "opts", None)
-    if opts is None:
-        return ""
-    # Neo often exposes TE in the shared VAE / Text Encoder dropdown (`sd_vae`).
-    for attr in ("sd_text_encoder", "sd_vae"):
-        val = getattr(opts, attr, None)
-        if val and str(val).strip() and str(val).strip().lower() not in ("automatic", "none"):
-            return str(val)
-    return ""
+    return pick_text_encoder(_module_paths())
 
 
 def _current_stack():
-    return detect_stack(_checkpoint_name(), _text_encoder_name())
+    return detect_stack(
+        _checkpoint_name(),
+        _text_encoder_name(),
+        preset=_forge_preset(),
+    )
 
 
 def _generate(image: Image.Image | None, notes: str):
@@ -58,8 +72,10 @@ def _generate(image: Image.Image | None, notes: str):
 def on_ui_tabs():
     with gr.Blocks(analytics_enabled=False) as ui:
         gr.Markdown(
-            "## Image → Prompt (Krea 2)\n"
-            "v1 stub: usa **notas** + stack seleccionado. La imagen queda para un backend futuro."
+            "## Image → Prompt (Krea 2 / Klein 9B)\n"
+            "Lee el **UI Preset** activo de Forge Neo (`forge_checkpoint_<preset>`), "
+            "no solo `sd_model_checkpoint` (puede quedar desfasado).\n\n"
+            "v1 stub: usa **notas** + stack. La imagen queda para un backend futuro."
         )
         with gr.Row():
             with gr.Column(scale=1):
@@ -111,7 +127,7 @@ def on_ui_tabs():
                     source_text_component=prompt_out,
                 )
             )
-        except Exception as exc:  # noqa: BLE001 — UI must load even if paste API differs
+        except Exception as exc:  # noqa: BLE001
             gr.Markdown(f"Send-to no disponible (`infotext_utils`: {exc}). Usa el botón copiar del prompt.")
 
     return [(ui, "Image → Prompt", "img2prompt_tab")]

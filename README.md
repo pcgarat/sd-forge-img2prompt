@@ -1,30 +1,29 @@
 # sd-forge-img2prompt
 
-Extensión para **[Forge Neo](https://github.com/Haoming02/sd-webui-forge-classic/tree/neo)** que te ayuda a **reproducir una imagen con un prompt** pensado para el modelo que tienes cargado.
+Extensión para **[Forge Neo](https://github.com/Haoming02/sd-webui-forge-classic/tree/neo)** que te ayuda a **reproducir una imagen con un prompt** pensado para el modelo del **UI Preset** activo.
 
 ## ¿Qué hace?
 
 1. Abres la pestaña **Image → Prompt**.
 2. Subes una imagen o la **pegas desde el portapapeles**.
 3. (Opcional) Escribes unas **notas** sobre lo que quieres conservar (sujeto, luz, estilo…).
-4. Pulsas **Generate**: la extensión mira el **checkpoint y text encoder** seleccionados en Forge y genera un **prompt en prosa natural** (estilo Krea 2 / Qwen3-VL, no lista de tags booru).
-5. Con **Send to txt2img** / **Send to img2img** vuelcas ese prompt al cuadro de generación.
-6. Además muestra **pistas de sampler** según si el checkpoint parece Turbo (~8 steps, CFG bajo) o RAW (~28 steps, CFG ~4.5), sin cambiar tus settings solos.
+4. Pulsas **Generate**: lee el checkpoint/TE del **preset Forge** (`forge_checkpoint_<preset>` + módulos), no solo `sd_model_checkpoint` (a veces queda desfasado), y genera un **prompt en prosa** (no tags booru).
+5. **Send to txt2img** / **img2img** vuelca el prompt.
+6. Muestra **hints de sampler** (Krea Turbo/RAW o Klein distilled/base) sin cambiar settings.
 
-Si el stack **no es Krea 2**, avisa y **no** presenta el resultado como “optimizado” para ese modelo.
+Soportado: **Krea 2** y **FLUX.2 Klein 9B**. Otros stacks → aviso, sin fingir optimización.
 
 ### Estado actual (v1)
 
-- Enfocado en **Krea 2** (Turbo / RAW).
-- El “cerebro” de visión aún no está: la imagen se acepta en la UI, pero el prompt se construye sobre todo a partir de tus **notas** + el perfil Krea 2 (**StubProvider**).
-- La arquitectura deja un `PromptProvider` listo para enchufar después un modelo de visión o una API, sin rehacer la pestaña.
+- Stub sin visión: el prompt sale de tus **notas** + perfil del stack (`StubProvider`).
+- `PromptProvider` listo para un VL/API después.
 
 ## Requisitos
 
 - Forge Neo
-- Checkpoint **Krea 2** y text encoder **Qwen3-VL 4B** (`qwen3vl_4b_…`) seleccionados en la UI
+- Preset / checkpoint **Krea 2** (+ Qwen3-VL) o **Klein 9B** (+ Qwen3 8B)
 
-No instala dependencias extra (`install.py` ausente): compatible con entornos que usan `--skip-install` (p. ej. docker-neo).
+Sin `install.py` (compatible con `--skip-install`).
 
 ## Instalación
 
