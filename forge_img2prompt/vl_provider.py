@@ -40,10 +40,11 @@ from forge_img2prompt.vl_download import download_plan_markdown, ensure_model_do
 ProgressCb = Callable[[float, str], None]
 
 _CAPTION_SYSTEM = (
-    "You write image prompts for FLUX / Krea 2 style generators. "
-    "Reply with ONE paragraph of natural-language visual prose only — no bullet lists, "
+    "You write image prompts for FLUX / Krea 2 / FLUX.2 Klein style generators. "
+    "Reply with natural-language visual prose only — no bullet lists, "
     "no booru tags, no preamble. Order: subject, action/pose, environment, composition, "
-    "lighting, materials/atmosphere. Put any readable on-image text in \"quotes\"."
+    "lighting, materials/atmosphere. Put any readable on-image text in \"quotes\". "
+    "Do not choose your own length; obey only the word-count range in the user message."
 )
 
 _CAPTION_UNCENSORED_EXTRA = (
@@ -66,11 +67,12 @@ _DETAIL_SYSTEM = (
     "Describe ONLY the real photograph content that is NOT gray. "
     "Start from the subject anchor and add concrete local traits "
     "(face, hair, skin, fabric, marks, jewelry). "
-    "ONE short prose sentence. Never comma-separated tags. "
+    "Natural-language prose only — never comma-separated tags. "
     "FORBIDDEN: other people, the rest of the photo, furniture, walls, tables, "
     "rooms, lighting essays, atmosphere, camera style, keyword lists, or "
     "retelling any scene context you were given. "
-    "No bullet lists, no booru tags, no preamble."
+    "No bullet lists, no booru tags, no preamble. "
+    "Do not choose your own length; obey only the word-count range given."
 )
 
 
@@ -85,10 +87,14 @@ def _language_instruction(language: str) -> str:
 
 def _word_range_instruction(word_min: int, word_max: int) -> str:
     if word_min == word_max:
-        return f"Write exactly {word_min} words (count them; no more, no fewer)."
+        return (
+            f"LENGTH (mandatory, from UI sliders): write exactly {word_min} words "
+            "(count them; no more, no fewer). Ignore any other length habit."
+        )
     return (
-        f"Write between {word_min} and {word_max} words inclusive "
-        "(count carefully; stay inside this range)."
+        f"LENGTH (mandatory, from UI sliders): write between {word_min} and {word_max} "
+        "words inclusive (count carefully; stay inside this range). "
+        "Ignore any other length habit."
     )
 
 
@@ -152,7 +158,7 @@ def _build_detail_user_text(
     # Anchor comes from a prior identify step (e.g. "el hombre de la izquierda").
     parts = [
         "Image: masked close-up. Flat gray = out of scope; ignore it.",
-        "Write ONE prose sentence about the non-gray subject only.",
+        "Describe the non-gray subject only in connected prose.",
         "Do NOT invent a second person, table, wall, or the rest of the photo.",
         "Do NOT output comma-separated tags (bad: 'beard, gray hair, wrinkles').",
         "Do NOT describe global lighting, mood, camera, or the full scene.",
@@ -330,14 +336,17 @@ class QwenVLProvider:
         wmin, wmax = clamp_word_range(
             word_min, word_max, bounds=GEN_WORDS_BOUNDS, default=GEN_WORDS_DEFAULT
         )
-        system = f"{_CAPTION_SYSTEM} {_language_instruction(lang)}"
+        system = (
+            f"{_CAPTION_SYSTEM} {_language_instruction(lang)} "
+            f"{_word_range_instruction(wmin, wmax)}"
+        )
         if uncensored:
             system = f"{system} {_CAPTION_UNCENSORED_EXTRA}"
         return self._run_vl(
             image,
             system,
             _build_user_text(notes, family, lang, word_min=wmin, word_max=wmax),
-            max_new_tokens=max_tokens_for_words(wmax, floor=64, ceil=480),
+            max_new_tokens=max_tokens_for_words(wmax, floor=64),
         )
 
     def _identify_zone(
@@ -390,7 +399,7 @@ class QwenVLProvider:
             _build_detail_user_text(
                 notes, lang, anchor=anchor, word_min=wmin, word_max=wmax
             ),
-            max_new_tokens=max_tokens_for_words(wmax, floor=24, ceil=320),
+            max_new_tokens=max_tokens_for_words(wmax, floor=24),
         )
         return clamp_text_to_words(raw, wmax)
 
@@ -690,11 +699,14 @@ class QwenVLProvider:
 
 
 class CompositeProvider:
-    """VL si hay imagen; si no, stub por notas."""
+    """VL si hay imagen; si no, stub por notas. Enruta Ollama vs Transformers."""
 
     def __init__(self) -> None:
         self.stub = StubProvider()
         self.vl = QwenVLProvider()
+        from forge_img2prompt.ollama_vl import OllamaVLProvider
+
+        self.ollama = OllamaVLProvider()
 
     def generate(
         self,
@@ -706,6 +718,8 @@ class CompositeProvider:
         if request.image is not None:
             choice = choice_by_value(vl_value) if vl_value else choice_by_value("")
             assert choice is not None
+            if choice.is_ollama:
+                return self.ollama.generate(request, choice, progress=progress)
             return self.vl.generate(request, choice, progress=progress)
         return self.stub.generate(request)
 
@@ -718,6 +732,8 @@ class CompositeProvider:
     ) -> PromptResult:
         choice = choice_by_value(vl_value) if vl_value else choice_by_value("")
         assert choice is not None
+        if choice.is_ollama:
+            return self.ollama.detail(request, choice, progress=progress)
         return self.vl.detail(request, choice, progress=progress)
 
 
@@ -725,6 +741,8 @@ def initial_status_markdown() -> str:
     from forge_img2prompt.vl_catalog import preferred_choice
 
     choice = preferred_choice()
+    if choice.is_ollama:
+        return f"Backend **Ollama** · modelo `{choice.hf_id}` (sin VRAM Forge)."
     local = Path(choice.local_path)
     if is_local_ready(local):
         return f"Modelo **{choice.hf_id}** listo en `{local}`."

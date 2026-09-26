@@ -43,6 +43,8 @@ from forge_img2prompt.provider import (
     clamp_overlap_discard,
 )
 from forge_img2prompt.stack import detect_stack, pick_text_encoder
+from forge_img2prompt.ollama_client import ping_tags
+from forge_img2prompt.ollama_settings import get_ollama_config, register_ollama_settings
 from forge_img2prompt.vl_catalog import (
     choice_by_value,
     dropdown_choices,
@@ -63,6 +65,14 @@ log(
     f"prefs UI: gen={_PREFS['gen_wmin']}-{_PREFS['gen_wmax']} "
     f"det={_PREFS['det_wmin']}-{_PREFS['det_wmax']} overlap={_PREFS['det_overlap']}"
 )
+
+
+def _refresh_catalog() -> list:
+    """Reconsulta Ollama /api/tags y actualiza el catálogo en memoria."""
+    global _CATALOG
+    _CATALOG = list_vl_models()
+    log(f"catálogo VL refrescado: {len(_CATALOG)} modelos")
+    return _CATALOG
 
 
 def _opt(name: str, default=None):
@@ -120,6 +130,30 @@ def _refresh_stack():
 def _plan_for_value(vl_value: str) -> str:
     choice = choice_by_value(vl_value, _CATALOG)
     assert choice is not None
+    if choice.is_ollama:
+        cfg = get_ollama_config(model=choice.hf_id)
+        ok, msg = ping_tags(cfg)
+        mark = "OK" if ok else "aviso"
+        key_state = "sí" if cfg.api_key else "no"
+        cloud_hint = (
+            "\n- Cloud: API key o `ollama signin` en el host; "
+            "URL directa `https://ollama.com` si no usas proxy local.\n"
+            if cfg.is_cloud
+            else "\n"
+        )
+        return (
+            f"### Backend Ollama ({mark})\n\n"
+            f"- URL: `{cfg.base_url}`\n"
+            f"- Modelo: `{choice.hf_id}`\n"
+            f"- API key: {key_state}\n"
+            f"- Timeout: {cfg.timeout:.0f}s"
+            f"{cloud_hint}\n"
+            f"{msg}\n\n"
+            "Conexión en **Settings → Image → Prompt / Ollama** (URL, API key, timeout). "
+            "El modelo se elige en este dropdown. "
+            "Si Forge corre en Docker y falla la conexión, en el host: "
+            "`OLLAMA_HOST=0.0.0.0:11434` y URL `http://172.17.0.1:11434`."
+        )
     dest = Path(choice.local_path)
     return download_plan_markdown(dest, repo_id=choice.hf_id)
 
@@ -141,10 +175,11 @@ def on_ui_tabs():
     with gr.Blocks(analytics_enabled=False) as ui:
         gr.Markdown(
             "## Image → Prompt (Krea 2 / Klein 9B)\n"
-            "Caption con **Qwen3-VL** (transformers). En RTX 4060 8 GB elige "
-            "**Huihui 2B abliterated** (uncensor, ~5 GB VRAM). El **4B** mejora "
-            "calidad pero puede OOM. La **primera** Generate con imagen descarga "
-            "el modelo seleccionado a `TextEncoders/<nombre>/`.\n\n"
+            "Caption con **Ollama** (modelos con visión del dropdown; "
+            "sin pelear VRAM con Forge) o **Qwen3-VL** transformers en disco.\n\n"
+            "Ollama: elige el modelo aquí; conexión en "
+            "**Settings → Image → Prompt / Ollama** (URL, API key, timeout). "
+            "Transformers: en 8 GB elige **Huihui 2B**; el **4B** puede OOM.\n\n"
             "Sin imagen → stub solo con **Notas**. "
             "Tras Generate, pinta una **máscara** (pincel magenta) sobre la zona "
             "y pulsa **Añadir detalle**: se analiza **solo lo pintado** "
@@ -218,6 +253,12 @@ def on_ui_tabs():
                         value=default_vl,
                         interactive=True,
                         scale=3,
+                    )
+                    refresh_vl_btn = gr.Button(
+                        "↻",
+                        scale=0,
+                        min_width=40,
+                        elem_id="img2prompt_refresh_vl",
                     )
                     lang_dd = gr.Dropdown(
                         label="Idioma del prompt",
@@ -337,58 +378,60 @@ def on_ui_tabs():
             stack = _current_stack()
             choice = choice_by_value(vl_value, _CATALOG)
             assert choice is not None
-            dest = Path(choice.local_path)
-            dest.mkdir(parents=True, exist_ok=True)
             img = editor_to_rgb(editor)
             wmin, wmax = parse_range_text(
                 gen_raw, bounds=GEN_WORDS_BOUNDS, default=GEN_WORDS_DEFAULT
             )
+            plan = _plan_for_value(choice.value)
 
             yield (
                 "",
                 "",
                 f"**Stack:** `{stack.summary}`\n\nPreparando `{choice.hf_id}` "
                 f"(rango {wmin}–{wmax} palabras)…",
-                download_plan_markdown(dest, repo_id=choice.hf_id),
+                plan,
             )
 
-            if img is not None and not is_local_ready(dest):
-                try:
-                    for event in iter_model_download(
-                        repo_id=choice.hf_id,
-                        local_dir=dest,
-                        progress=lambda f, d: progress(f * 0.7, desc=d),
-                    ):
+            if img is not None and not choice.is_ollama:
+                dest = Path(choice.local_path)
+                dest.mkdir(parents=True, exist_ok=True)
+                if not is_local_ready(dest):
+                    try:
+                        for event in iter_model_download(
+                            repo_id=choice.hf_id,
+                            local_dir=dest,
+                            progress=lambda f, d: progress(f * 0.7, desc=d),
+                        ):
+                            yield (
+                                "",
+                                "",
+                                f"**Stack:** `{stack.summary}`\n\n{event.status}",
+                                event.plan,
+                            )
+                    except Exception as exc:  # noqa: BLE001
                         yield (
                             "",
                             "",
-                            f"**Stack:** `{stack.summary}`\n\n{event.status}",
-                            event.plan,
+                            f"Error descargando `{choice.hf_id}`: {exc}",
+                            download_plan_markdown(dest, repo_id=choice.hf_id),
                         )
-                except Exception as exc:  # noqa: BLE001
+                        return
+
+                    if not is_local_ready(dest):
+                        yield (
+                            "",
+                            "",
+                            f"Descarga incompleta en `{dest}`",
+                            download_plan_markdown(dest, repo_id=choice.hf_id),
+                        )
+                        return
+
                     yield (
                         "",
                         "",
-                        f"Error descargando `{choice.hf_id}`: {exc}",
+                        f"**Stack:** `{stack.summary}`\n\nDescarga completa. Caption…",
                         download_plan_markdown(dest, repo_id=choice.hf_id),
                     )
-                    return
-
-                if not is_local_ready(dest):
-                    yield (
-                        "",
-                        "",
-                        f"Descarga incompleta en `{dest}`",
-                        download_plan_markdown(dest, repo_id=choice.hf_id),
-                    )
-                    return
-
-                yield (
-                    "",
-                    "",
-                    f"**Stack:** `{stack.summary}`\n\nDescarga completa. Caption…",
-                    download_plan_markdown(dest, repo_id=choice.hf_id),
-                )
 
             progress(0.72, desc="Caption VL…")
 
@@ -411,7 +454,7 @@ def on_ui_tabs():
             if result.negative_hint:
                 hints = f"{hints}\n{result.negative_hint}".strip()
             status = f"{stack.summary}\n{result.status}".strip()
-            yield result.prompt, hints, status, download_plan_markdown(dest, repo_id=choice.hf_id)
+            yield result.prompt, hints, status, _plan_for_value(choice.value)
 
         def _preview_mask_crop(editor: dict[str, Any] | Image.Image | None):
             if not isinstance(editor, dict):
@@ -436,10 +479,8 @@ def on_ui_tabs():
             stack = _current_stack()
             choice = choice_by_value(vl_value, _CATALOG)
             assert choice is not None
-            dest = Path(choice.local_path)
-            dest.mkdir(parents=True, exist_ok=True)
             base = (base_prompt or "").strip()
-            plan = download_plan_markdown(dest, repo_id=choice.hf_id)
+            plan = _plan_for_value(choice.value)
             wmin, wmax = parse_range_text(
                 det_raw, bounds=DETAIL_WORDS_BOUNDS, default=DETAIL_WORDS_DEFAULT
             )
@@ -497,42 +538,45 @@ def on_ui_tabs():
                 "",
             )
 
-            if not is_local_ready(dest):
-                try:
-                    for event in iter_model_download(
-                        repo_id=choice.hf_id,
-                        local_dir=dest,
-                        progress=lambda f, d: progress(f * 0.7, desc=d),
-                    ):
+            if not choice.is_ollama:
+                dest = Path(choice.local_path)
+                dest.mkdir(parents=True, exist_ok=True)
+                if not is_local_ready(dest):
+                    try:
+                        for event in iter_model_download(
+                            repo_id=choice.hf_id,
+                            local_dir=dest,
+                            progress=lambda f, d: progress(f * 0.7, desc=d),
+                        ):
+                            yield (
+                                base,
+                                "",
+                                f"**Stack:** `{stack.summary}`\n\n{event.status}",
+                                event.plan,
+                                preview_ui,
+                                "",
+                            )
+                    except Exception as exc:  # noqa: BLE001
                         yield (
                             base,
                             "",
-                            f"**Stack:** `{stack.summary}`\n\n{event.status}",
-                            event.plan,
+                            f"Error descargando `{choice.hf_id}`: {exc}",
+                            download_plan_markdown(dest, repo_id=choice.hf_id),
                             preview_ui,
                             "",
                         )
-                except Exception as exc:  # noqa: BLE001
-                    yield (
-                        base,
-                        "",
-                        f"Error descargando `{choice.hf_id}`: {exc}",
-                        download_plan_markdown(dest, repo_id=choice.hf_id),
-                        preview_ui,
-                        "",
-                    )
-                    return
+                        return
 
-                if not is_local_ready(dest):
-                    yield (
-                        base,
-                        "",
-                        f"Descarga incompleta en `{dest}`",
-                        download_plan_markdown(dest, repo_id=choice.hf_id),
-                        preview_ui,
-                        "",
-                    )
-                    return
+                    if not is_local_ready(dest):
+                        yield (
+                            base,
+                            "",
+                            f"Descarga incompleta en `{dest}`",
+                            download_plan_markdown(dest, repo_id=choice.hf_id),
+                            preview_ui,
+                            "",
+                        )
+                        return
 
             progress(0.72, desc="Detalle VL…")
 
@@ -565,12 +609,25 @@ def on_ui_tabs():
                 base,
                 hints,
                 status,
-                download_plan_markdown(dest, repo_id=choice.hf_id),
+                _plan_for_value(choice.value),
                 preview_ui,
                 zone,
             )
 
         vl_dd.change(fn=_plan_for_value, inputs=[vl_dd], outputs=[download_plan])
+
+        def _refresh_vl_dropdown(current: str):
+            cat = _refresh_catalog()
+            pairs_new = dropdown_choices(cat)
+            valid = {v for _, v in pairs_new}
+            value = current if current in valid else preferred_value(cat)
+            return gr.update(choices=pairs_new, value=value), _plan_for_value(value)
+
+        refresh_vl_btn.click(
+            fn=_refresh_vl_dropdown,
+            inputs=[vl_dd],
+            outputs=[vl_dd, download_plan],
+        )
         image.change(
             fn=_preview_mask_crop,
             inputs=[image],
@@ -581,15 +638,35 @@ def on_ui_tabs():
                 fn=_persist_prefs,
                 inputs=[gen_range, det_range, det_overlap, lang_dd, vl_dd],
             )
+        # Forge Neo = Gradio 4.x → parámetro `js` (no `_js`).
+        # El preprocesador fuerza el valor del dual-range al payload del click.
+        _JS_SYNC_GEN = """
+(img, notes, vl, lang, gen_raw) => {
+  if (window.img2promptSyncRanges) window.img2promptSyncRanges();
+  const root = document.getElementById("img2prompt_gen_range");
+  const el = root && root.querySelector("textarea, input");
+  return [img, notes, vl, lang, el ? el.value : gen_raw];
+}
+""".strip()
+        _JS_SYNC_DET = """
+(img, zone_notes, vl, lang, prompt, det_raw, overlap) => {
+  if (window.img2promptSyncRanges) window.img2promptSyncRanges();
+  const root = document.getElementById("img2prompt_det_range");
+  const el = root && root.querySelector("textarea, input");
+  return [img, zone_notes, vl, lang, prompt, el ? el.value : det_raw, overlap];
+}
+""".strip()
         generate_btn.click(
             fn=_generate_with_plan,
             inputs=[image, notes, vl_dd, lang_dd, gen_range],
             outputs=[prompt_out, hints_out, status_out, download_plan],
+            js=_JS_SYNC_GEN,
         )
         detail_btn.click(
             fn=_detail_with_plan,
             inputs=[image, zone_notes, vl_dd, lang_dd, prompt_out, det_range, det_overlap],
             outputs=[prompt_out, hints_out, status_out, download_plan, crop_preview, zone_prompt],
+            js=_JS_SYNC_DET,
         )
         refresh_btn.click(fn=_refresh_stack, inputs=[], outputs=[status_out])
         ui.load(fn=_refresh_stack, inputs=[], outputs=[status_out])
@@ -627,4 +704,5 @@ def on_ui_tabs():
 
 
 script_callbacks.on_ui_tabs(on_ui_tabs)
-log("callback on_ui_tabs registrado")
+script_callbacks.on_ui_settings(register_ollama_settings)
+log("callback on_ui_tabs + on_ui_settings (Ollama) registrados")

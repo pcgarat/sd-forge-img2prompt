@@ -16,13 +16,38 @@ Soportado (perfil prosa/hints): **Krea 2** y **FLUX.2 Klein 9B**. Otros stacks �
 
 ### Estado actual
 
-- Selector VL con 3 Instruct (transformers, descarga a `TextEncoders/<nombre>/`):
-  - **Huihui 2B abliterated** (recomendado en 8 GB; uncensor)
+- Backend **Ollama** (recomendado) vía `/api/chat` + imágenes.
+  El **modelo se elige en el dropdown** de la pestaña (todos los tags con
+  `vision` de tu Ollama, local y cloud). Conexión en
+  **Settings → Image → Prompt / Ollama**: URL, timeout y **API key**
+  (cloud / `https://ollama.com`). Botón ↻ junto al dropdown refresca la lista.
+  No carga el VL en el proceso Forge → no pelea VRAM con el checkpoint.
+  Ejemplos típicos (según lo que tengas pullado):
+  - `qwen3-vl:8b-instruct` — local (preferido)
+  - `huihui-qwen3vl-8b-abl:q6` — uncensor local (GGUF Q6_K + `mmproj`)
+  - Cloud con visión: `kimi-k3`, `kimi-k2.6`, `mistral-large-3:675b-cloud`,
+    `glm-5.3-flash`, `gemma4:31b-cloud` (API key o `ollama signin`)
+  En 8 GB VRAM el Huihui 8B irá con offload a RAM; si quieres más holgura usa Q4 o el Huihui 4B (transformers).
+- Backend **Transformers** (opcional), descarga a `TextEncoders/<nombre>/`:
+  - **Huihui 2B abliterated** (uncensor; ~5 GB VRAM)
   - **Qwen3-VL-2B-Instruct** oficial
   - **Huihui 4B abliterated** (mejor calidad; riesgo OOM en 8 GB)
-- 1ª Generate con imagen: checklist + barra de progreso del modelo elegido.
 - Sin imagen: stub con **Notas**.
 - **Añadir detalle**: máscara con pincel → crop del bbox → texto solo en «Prompt de la zona».
+
+#### Ollama + Docker (forge-neo)
+
+Si Forge corre en contenedor y Ollama en el host:
+
+1. En el host, Ollama debe escuchar fuera de localhost:
+   ```bash
+   # /etc/systemd/system/ollama.service.d/override.conf
+   [Service]
+   Environment="OLLAMA_HOST=0.0.0.0:11434"
+   ```
+   Luego `sudo systemctl daemon-reload && sudo systemctl restart ollama`.
+2. En Settings de la extensión: URL `http://172.17.0.1:11434` (o la gateway de tu red Docker).
+3. Misma convención que **chatBot**: env `OLLAMA_HOST` si aplica.
 
 ## Requisitos
 
@@ -83,8 +108,11 @@ Con **docker-neo** en la misma máquina: monta el repo vía `IMG2PROMPT_EXT_PATH
 | `forge_img2prompt/stack.py` | Detección Krea 2 / Klein / turbo / RAW |
 | `forge_img2prompt/provider.py` | Stub + `PromptRequest` / `DetailRequest` / `append_detail` |
 | `forge_img2prompt/mask_crop.py` | ImageEditor brush → crop del bbox |
-| `forge_img2prompt/vl_catalog.py` | Catálogo VL Instruct (oficial + Huihui abliterated) |
-| `forge_img2prompt/vl_provider.py` | Caption + detalle Qwen*-VL + composite |
+| `forge_img2prompt/vl_catalog.py` | Catálogo VL (Ollama + Instruct HF) |
+| `forge_img2prompt/vl_provider.py` | Caption + detalle Transformers + composite |
+| `forge_img2prompt/ollama_settings.py` | Settings Forge + config Ollama |
+| `forge_img2prompt/ollama_client.py` | Cliente `/api/chat` + images |
+| `forge_img2prompt/ollama_vl.py` | Provider generate/detail vía Ollama |
 
 ## Licencia
 

@@ -22,12 +22,21 @@
 
   function setBridge(bridgeId, lo, hi) {
     const input = bridgeInput(bridgeId);
-    if (!input) return;
+    if (!input) return false;
     const next = String(lo) + "," + String(hi);
-    if (input.value === next) return;
-    setNativeValue(input, next);
-    input.dispatchEvent(new Event("input", { bubbles: true }));
-    input.dispatchEvent(new Event("change", { bubbles: true }));
+    if (input.value !== next) {
+      setNativeValue(input, next);
+    }
+    // Forge WebUI: plain DOM events are not enough; updateInput pushes the
+    // value into Gradio's internal state so Python receives it on click.
+    // Call even when DOM already matches — Gradio state can still be stale.
+    if (typeof updateInput === "function") {
+      updateInput(input);
+    } else {
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+      input.dispatchEvent(new Event("change", { bubbles: true }));
+    }
+    return true;
   }
 
   function paint(widget) {
@@ -46,40 +55,60 @@
     if (hiVal) hiVal.textContent = String(hi);
   }
 
+  function readWidgetRange(widget) {
+    const loEl = widget.querySelector(".img2prompt-dual-lo");
+    const hiEl = widget.querySelector(".img2prompt-dual-hi");
+    if (!loEl || !hiEl) return null;
+    let lo = Number(loEl.value);
+    let hi = Number(hiEl.value);
+    if (Number.isNaN(lo) || Number.isNaN(hi)) return null;
+    if (lo > hi) {
+      const t = lo;
+      lo = hi;
+      hi = t;
+      loEl.value = String(lo);
+      hiEl.value = String(hi);
+    }
+    widget.dataset.lo = String(lo);
+    widget.dataset.hi = String(hi);
+    return { lo: lo, hi: hi };
+  }
+
+  function syncWidget(widget) {
+    const bridgeId = widget.dataset.bridge;
+    const range = readWidgetRange(widget);
+    if (!range || !bridgeId) return;
+    paint(widget);
+    setBridge(bridgeId, range.lo, range.hi);
+  }
+
   function bindWidget(widget) {
     if (widget.dataset.bound === "1") return;
     widget.dataset.bound = "1";
     const loEl = widget.querySelector(".img2prompt-dual-lo");
     const hiEl = widget.querySelector(".img2prompt-dual-hi");
-    const bridgeId = widget.dataset.bridge;
-    if (!loEl || !hiEl || !bridgeId) return;
+    if (!loEl || !hiEl) return;
 
-    const syncFromInputs = () => {
-      let lo = Number(loEl.value);
-      let hi = Number(hiEl.value);
-      if (lo > hi) {
-        if (document.activeElement === loEl) hi = lo;
-        else lo = hi;
-        loEl.value = String(lo);
-        hiEl.value = String(hi);
-      }
-      widget.dataset.lo = String(lo);
-      widget.dataset.hi = String(hi);
-      paint(widget);
-      setBridge(bridgeId, lo, hi);
-    };
+    const syncFromInputs = () => syncWidget(widget);
 
     loEl.addEventListener("input", syncFromInputs);
     hiEl.addEventListener("input", syncFromInputs);
-    paint(widget);
-    setBridge(bridgeId, Number(loEl.value), Number(hiEl.value));
+    loEl.addEventListener("change", syncFromInputs);
+    hiEl.addEventListener("change", syncFromInputs);
+    syncFromInputs();
   }
 
   function initRanges() {
     document.querySelectorAll(".img2prompt-dual").forEach(bindWidget);
   }
 
+  /** Force every dual-range into its Gradio bridge textbox (call before Generate/Detail). */
+  function syncRanges() {
+    document.querySelectorAll(".img2prompt-dual").forEach(syncWidget);
+  }
+
   window.img2promptInitRanges = initRanges;
+  window.img2promptSyncRanges = syncRanges;
 
   if (typeof onUiLoaded === "function") {
     onUiLoaded(initRanges);

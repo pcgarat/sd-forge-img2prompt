@@ -72,3 +72,26 @@ def test_detail_user_text_includes_zone_notes():
 
 def test_word_range_instruction_exact():
     assert "exactly 12" in _word_range_instruction(12, 12)
+    assert "LENGTH" in _word_range_instruction(12, 12)
+    assert "UI sliders" in _word_range_instruction(40, 80)
+
+
+def test_caption_system_has_no_fixed_length():
+    from forge_img2prompt.vl_provider import _CAPTION_SYSTEM
+
+    low = _CAPTION_SYSTEM.lower()
+    assert "one paragraph" not in low
+    assert "word-count" in low or "word count" in low.replace("-", " ")
+
+
+def test_family_hint_has_no_length():
+    from forge_img2prompt.vl_provider import _family_hint
+
+    for fam in ("krea2", "klein9b"):
+        low = _family_hint(fam).lower()
+        assert "word" not in low
+        assert "paragraph" not in low
+        assert "short" not in low
+        assert "long" not in low
+        assert "length" not in low
+

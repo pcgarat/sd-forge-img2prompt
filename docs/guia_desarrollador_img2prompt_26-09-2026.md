@@ -60,9 +60,12 @@ scripts/img2prompt.py          # on_ui_tabs, wiring Gradio, send-to
 forge_img2prompt/
   stack.py                     # family/variant desde nombres ckpt+TE
   provider.py                  # PromptRequest/Result, Stub, append_detail, notas→prosa
-  vl_catalog.py                # catálogo HF + rutas TextEncoders
+  vl_catalog.py                # catálogo Ollama (vision) + HF + rutas TextEncoders
   vl_download.py               # descarga 1ª vez
   vl_provider.py               # QwenVLProvider + CompositeProvider
+  ollama_settings.py           # Settings URL/key/timeout
+  ollama_client.py             # /api/chat + list_vision_models
+  ollama_vl.py                 # caption/detail vía Ollama
   mask_crop.py                 # ImageEditor brush → crop enmascarado
   log.py                       # [img2prompt] en terminal Forge
 ```
@@ -75,13 +78,15 @@ flowchart TB
   Script -->|PromptRequest| Comp["CompositeProvider"]
   Script -->|DetailRequest| Comp
   Comp --> Stub["StubProvider"]
+  Comp --> Ollama["OllamaVLProvider"]
   Comp --> VL["QwenVLProvider"]
   Stub --> PR["PromptResult"]
+  Ollama --> PR
   VL --> PR
   Script -->|paste_params| Send["infotext_utils → txt2img/img2img"]
 ```
 
-Patrón: **Strategy** (`PromptProvider`) + **Composite** (elige stub vs VL) + **DTO inmutables** (`PromptRequest`, `DetailRequest`, `StackInfo`).
+Patrón: **Strategy** (`PromptProvider`) + **Composite** (elige stub vs Ollama vs VL) + **DTO inmutables** (`PromptRequest`, `DetailRequest`, `StackInfo`).
 
 ---
 
@@ -130,7 +135,10 @@ Las notas **no** sustituyen al caption: van al **user prompt** del chat VL:
 
 > `User notes to respect or weave in: {notes}`
 
-El system prompt fuerza un párrafo de prosa visual (sujeto → pose → entorno → composición → luz → materiales). Si el modelo es *abliterated*, se añade instrucción uncensor.
+El system prompt pide prosa visual (sujeto → pose → entorno → composición → luz → materiales)
+**sin fijar longitud**. El rango de palabras sale **solo de los sliders** UI
+(`word_min`/`word_max` → instrucción LENGTH en system + user). Si el modelo es *abliterated*,
+se añade instrucción uncensor.
 
 En **Añadir detalle**, el mismo textbox de notas se reutiliza como:
 
@@ -141,7 +149,9 @@ En **Añadir detalle**, el mismo textbox de notas se reutiliza como:
 ### 3.4 Crítica / mejoras posibles
 
 1. **Un solo textbox para Generate y Detalle.** Si dejas notas globales (“tono noir”) y luego añades detalle de una zona, esas mismas notas se envían al crop. Conviene un campo **Notas de zona** separado, o limpiar/ignorar notas globales en `detail()`.
-2. **Sliders de longitud en UI no están cableados** a `PromptRequest.word_min/max` / `DetailRequest` (el provider ya los soporta; la UI usa defaults). Cablear o quitar los sliders hasta que lo estén.
+2. **Sliders de longitud** se sincronizan al bridge Gradio justo antes de Generate/Detalle
+   (`img2promptSyncRanges` + `js=` en el `.click`). Si el status sigue mostrando 45–90,
+   el bridge no recibió el valor: hard-refresh del navegador para recargar `img2prompt.js`.
 3. En stub, las notas se **amplifican** con coletilla fija; en VL se **tejen**. El usuario puede no percibir la diferencia: documentarlo en la UI ayuda.
 
 ---
@@ -280,17 +290,21 @@ Durante el caption VL se llama a `backend.memory_management.unload_all_models` p
 
 ### 6.2 Modelos VL (caption — catálogo)
 
-Definidos en `vl_catalog.VL_SPECS`:
+**Ollama (preferido):** entradas `ollama:{tag}` descubiertas con `/api/tags`
+filtrando `capabilities` ⊇ `vision` (locales + cloud pullados). Conexión en
+Settings (URL, API key, timeout); el modelo se elige en el dropdown de la pestaña.
+
+**Transformers (HF),** definidos en `vl_catalog.VL_SPECS`:
 
 | Selector UI | Hugging Face | VRAM aprox. | Notas |
 |-------------|--------------|-------------|--------|
-| ★ Huihui 2B abliterated | `huihui-ai/Huihui-Qwen3-VL-2B-Instruct-abliterated` | ~5 GB | Default recomendado; uncensor |
+| ★ Huihui 2B abliterated | `huihui-ai/Huihui-Qwen3-VL-2B-Instruct-abliterated` | ~5 GB | Uncensor |
 | Qwen3-VL-2B-Instruct | `Qwen/Qwen3-VL-2B-Instruct` | ~5 GB | Oficial; puede rechazar NSFW |
 | Huihui 4B abliterated | `huihui-ai/Huihui-Qwen3-VL-4B-Instruct-abliterated` | ≥9 GB | Mejor calidad; `risk=oom_8gb` |
 
-- Descarga: `TextEncoders/<local_name>/` (`config.json` + `*.safetensors`).
-- Runtime: `transformers.AutoModelForImageTextToText` + `AutoProcessor`, BF16 en CUDA / FP32 en CPU.
-- Tras cada generate/detail: `unload()` + liberar VRAM Forge otra vez.
+- Descarga HF: `TextEncoders/<local_name>/` (`config.json` + `*.safetensors`).
+- Runtime HF: `transformers.AutoModelForImageTextToText` + `AutoProcessor`, BF16 en CUDA / FP32 en CPU.
+- Tras cada generate/detail HF: `unload()` + liberar VRAM Forge otra vez.
 
 ```mermaid
 flowchart TB

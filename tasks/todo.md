@@ -9,12 +9,14 @@ Repo: https://github.com/pcgarat/sd-forge-img2prompt
 - [x] Smoke Forge Neo stub: Generate → Send txt2img
 - [x] Montaje dev docker-neo (`IMG2PROMPT_EXT_PATH`)
 - [x] Backend VL: catálogo Instruct (Huihui 2B/4B abliterated + Qwen 2B) + descarga TextEncoders + checklist/progreso
-- [x] Log progresivo en terminal Forge (`[img2prompt] …`)
-- [x] Máscara → detalle (crop bbox + append al prompt) · rama `feat/mask-add-detail`
+- [x] Backend Ollama (`/api/chat` + Settings conexión + modelos vision en dropdown pestaña)
+- [x] Selector pestaña: descubrimiento `/api/tags` (vision) + refresh ↻; sin DeepSeek
 - [ ] Smoke VL real (Huihui 2B abliterated + caption con imagen)
+- [ ] Smoke Ollama desde pestaña (Generate con `ollama:…`)
 - [ ] Smoke máscara: Generate → pintar → Añadir detalle → Send
 - [ ] (Ask first) make target `img2prompt-ext` en docker-neo
-- [ ] GGUF / llama.cpp (opcional)
+- [ ] Host: `OLLAMA_HOST=0.0.0.0:11434` (sudo) para Docker → Ollama
+- [x] ~~GGUF / llama.cpp (opcional)~~ → cubierto vía Ollama Q4
 - [x] ~~Task 3 seed extensions/~~ cancelada — repo dedicado
 
 ## Fuera de ciclo

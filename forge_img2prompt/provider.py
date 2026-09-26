@@ -21,10 +21,12 @@ LANG_CHOICES: tuple[tuple[str, str], ...] = (
 DEFAULT_LANG = LANG_ES
 
 # Rangos de palabras (UI + providers). Bounds = límites absolutos del slider.
-GEN_WORDS_BOUNDS: tuple[int, int] = (20, 180)
+GEN_WORDS_BOUNDS: tuple[int, int] = (20, 500)
 GEN_WORDS_DEFAULT: tuple[int, int] = (45, 90)
-DETAIL_WORDS_BOUNDS: tuple[int, int] = (5, 200)
+DETAIL_WORDS_BOUNDS: tuple[int, int] = (5, 500)
 DETAIL_WORDS_DEFAULT: tuple[int, int] = (8, 25)
+# Techo de tokens (~1.35× palabras + margen) para el máximo del slider (500 → ~687).
+WORDS_TOKEN_CEIL: int = 720
 # 0 = no descartar por solapamiento; N = descartar si hay ≥ N tokens de contenido compartidos
 OVERLAP_DISCARD_BOUNDS: tuple[int, int] = (0, 40)
 OVERLAP_DISCARD_DEFAULT: int = 10
@@ -59,7 +61,9 @@ def count_words(text: str) -> int:
     return len((text or "").split())
 
 
-def max_tokens_for_words(word_max: int, *, floor: int = 32, ceil: int = 512) -> int:
+def max_tokens_for_words(
+    word_max: int, *, floor: int = 32, ceil: int = WORDS_TOKEN_CEIL
+) -> int:
     """Token budget capped near word_max so the model cannot ramble forever."""
     # ~1.35 tokens/word + small cushion; lower than before so max is harder to blow past
     return max(floor, min(ceil, int(word_max * 1.35) + 12))

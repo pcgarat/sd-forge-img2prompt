@@ -3,10 +3,20 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
+from forge_img2prompt.ollama_settings import (
+    DEFAULT_OLLAMA_MODEL,
+    OLLAMA_VALUE,
+    get_ollama_config,
+    is_cloud_model,
+    is_ollama_value,
+    parse_ollama_value,
+)
+
 # RTX 4060 8 GB: tras liberar el checkpoint Forge, ~5 GB libres para VL.
 # - 2B BF16 ≈ 4.3 GB en disco / ~5 GB VRAM → cabe cómodo.
 # - 4B BF16 ≈ 8.9 GB en disco / ≥9 GB VRAM → justo o OOM; se ofrece avisado.
 # - 8B BF16 ≈ 17 GB → fuera de juego sin cuantización GGUF (otro backend).
+# - Ollama VL (descubrimiento /api/tags + vision) fuera del proceso Forge.
 # - FP8 Huihui/Qwen: vLLM/SGLang; Transformers aún no carga esos pesos.
 
 
@@ -63,12 +73,19 @@ class VlModelChoice:
 
     @property
     def value(self) -> str:
+        if self.kind == "ollama":
+            tag = (self.hf_id or "").strip() or DEFAULT_OLLAMA_MODEL
+            return f"ollama:{tag}"
         return self.local_path or f"hf:{self.hf_id}"
 
     @property
     def is_uncensored(self) -> bool:
         blob = f"{self.hf_id} {self.label}".lower()
-        return any(tok in blob for tok in ("abliterat", "uncensor"))
+        return any(tok in blob for tok in ("abliterat", "uncensor", "huihui"))
+
+    @property
+    def is_ollama(self) -> bool:
+        return self.kind == "ollama"
 
 
 def text_encoder_root() -> Path:
@@ -161,9 +178,49 @@ def sole_model_choice() -> VlModelChoice:
     return preferred_choice()
 
 
+def _ollama_choice_for(tag: str, *, recommended: bool = False) -> VlModelChoice:
+    tag = (tag or "").strip() or DEFAULT_OLLAMA_MODEL
+    where = "cloud" if is_cloud_model(tag) else "local"
+    stars = "★ " if recommended else ""
+    return VlModelChoice(
+        label=f"{stars}Ollama · {where} · {tag} · sin VRAM Forge",
+        local_path="",
+        hf_id=tag,
+        kind="ollama",
+        caption_ready=True,
+        recommended=recommended,
+    )
+
+
+def ollama_choice(tag: str | None = None) -> VlModelChoice:
+    """Una entrada Ollama (compat). Sin tag → default."""
+    return _ollama_choice_for(
+        tag or DEFAULT_OLLAMA_MODEL,
+        recommended=(tag or DEFAULT_OLLAMA_MODEL) == DEFAULT_OLLAMA_MODEL,
+    )
+
+
+def ollama_choices() -> list[VlModelChoice]:
+    """Entradas Ollama con visión (descubrimiento /api/tags o fallback)."""
+    from forge_img2prompt.ollama_client import list_vision_models
+
+    tags = list_vision_models(get_ollama_config())
+    if not tags:
+        tags = [DEFAULT_OLLAMA_MODEL]
+    out: list[VlModelChoice] = []
+    for i, tag in enumerate(tags):
+        out.append(
+            _ollama_choice_for(
+                tag,
+                recommended=tag == DEFAULT_OLLAMA_MODEL or (i == 0 and DEFAULT_OLLAMA_MODEL not in tags),
+            )
+        )
+    return out
+
+
 def list_vl_models(extra_dirs=None) -> list[VlModelChoice]:
     del extra_dirs
-    return [_choice_from_spec(s) for s in VL_SPECS]
+    return [*ollama_choices(), *(_choice_from_spec(s) for s in VL_SPECS)]
 
 
 def dropdown_choices(catalog: list[VlModelChoice] | None = None) -> list[tuple[str, str]]:
@@ -174,15 +231,24 @@ def dropdown_choices(catalog: list[VlModelChoice] | None = None) -> list[tuple[s
 def preferred_choice(catalog: list[VlModelChoice] | None = None) -> VlModelChoice:
     catalog = catalog if catalog is not None else list_vl_models()
     if not catalog:
-        return _choice_from_spec(VL_SPECS[0])
+        return ollama_choice()
     for c in catalog:
-        if c.recommended and is_local_ready(Path(c.local_path)):
+        if c.is_ollama and c.hf_id == DEFAULT_OLLAMA_MODEL:
+            return c
+    for c in catalog:
+        if c.is_ollama and not is_cloud_model(c.hf_id):
+            return c
+    for c in catalog:
+        if c.is_ollama:
+            return c
+    for c in catalog:
+        if c.recommended and c.local_path and is_local_ready(Path(c.local_path)):
             return c
     for c in catalog:
         if c.recommended:
             return c
     for c in catalog:
-        if is_local_ready(Path(c.local_path)):
+        if c.local_path and is_local_ready(Path(c.local_path)):
             return c
     return catalog[0]
 
@@ -196,11 +262,21 @@ def choice_by_value(value: str, catalog: list[VlModelChoice] | None = None) -> V
     value = (value or "").strip()
     if not value:
         return preferred_choice(catalog)
+    if is_ollama_value(value):
+        tag = parse_ollama_value(value)
+        for c in catalog:
+            if c.is_ollama and c.hf_id == tag:
+                return c
+        # Tag no listado aún (prefs antiguos / modelo nuevo): entrada ad-hoc
+        if value == OLLAMA_VALUE:
+            return preferred_choice(catalog)
+        return ollama_choice(tag)
     for c in catalog:
         if c.value == value or c.hf_id == value or value in (c.local_path, f"hf:{c.hf_id}"):
             return c
-    # Valor antiguo / ruta parcial
     for c in catalog:
-        if value.endswith(Path(c.local_path).name) or Path(c.local_path).name in value:
+        if c.local_path and (
+            value.endswith(Path(c.local_path).name) or Path(c.local_path).name in value
+        ):
             return c
     return preferred_choice(catalog)
