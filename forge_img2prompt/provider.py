@@ -11,11 +11,31 @@ from forge_img2prompt.stack import StackInfo
 _TAG_SOUP_HINTS = (", masterpiece", "1girl,", "best quality,", "ultra detailed,")
 
 
+# Valores canónicos del selector de idioma (UI y providers).
+LANG_ES = "es"
+LANG_EN = "en"
+LANG_CHOICES: tuple[tuple[str, str], ...] = (
+    ("Español", LANG_ES),
+    ("English", LANG_EN),
+)
+DEFAULT_LANG = LANG_ES
+
+
 @dataclass(frozen=True)
 class PromptRequest:
     image: Image.Image | None
     user_notes: str
     stack: StackInfo
+    language: str = DEFAULT_LANG
+
+
+def normalize_language(language: str | None) -> str:
+    raw = (language or "").strip().lower()
+    if raw in (LANG_ES, "español", "spanish", "spa"):
+        return LANG_ES
+    if raw in (LANG_EN, "english", "eng", "en-us", "en-gb"):
+        return LANG_EN
+    return DEFAULT_LANG
 
 
 @dataclass(frozen=True)
@@ -63,14 +83,21 @@ def _normalize_notes(notes: str) -> str:
     return " ".join((notes or "").split()).strip().strip('"')
 
 
-def _notes_to_prose(notes: str, family: str) -> str:
+def _notes_to_prose(notes: str, family: str, language: str = DEFAULT_LANG) -> str:
     """Turn user notes into natural-language prose. Empty notes → empty string."""
     text = _normalize_notes(notes)
     if not text:
         return ""
 
+    lang = normalize_language(language)
     if _looks_like_tag_soup(text):
         core = text.replace(",", ", ")
+        if lang == LANG_ES:
+            return (
+                f"Una escena detallada: {core}. "
+                "Describe primero el sujeto, luego entorno, composición, iluminación, materiales "
+                "y ambiente en prosa conectada — no una lista de keywords."
+            )
         return (
             f"A detailed scene: {core}. "
             "Describe the subject first, then environment, composition, lighting, materials and mood "
@@ -82,7 +109,19 @@ def _notes_to_prose(notes: str, family: str) -> str:
     if text[-1] not in ".!?":
         text += "."
 
-    # Light family-specific framing so the same notes are not a bare echo.
+    if lang == LANG_ES:
+        if family == "klein9b":
+            return (
+                f"{text} "
+                "Mantén relaciones espaciales explícitas; prioriza sustantivos concretos, "
+                "dirección de la luz y materiales. Pon el texto legible de la imagen entre «comillas»."
+            )
+        return (
+            f"{text} "
+            "Enfatiza composición, iluminación, materiales y atmósfera en lenguaje natural. "
+            "Pon el texto legible de la imagen entre «comillas»."
+        )
+
     if family == "klein9b":
         return (
             f"{text} "
@@ -142,9 +181,11 @@ class StubProvider:
                 ),
             )
 
-        prompt = _notes_to_prose(notes, stack.family)
+        lang = normalize_language(request.language)
+        prompt = _notes_to_prose(notes, stack.family, lang)
+        lang_label = "español" if lang == LANG_ES else "English"
         status = (
-            f"Stub {label} ({stack.variant}) · {img_info}. "
+            f"Stub {label} ({stack.variant}) · {img_info} · idioma={lang_label}. "
             f"Prompt derivado de tus notas ({len(notes)} caracteres). "
             "La imagen aún no se captiona."
         )
