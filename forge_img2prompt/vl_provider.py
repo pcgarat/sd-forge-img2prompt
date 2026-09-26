@@ -8,7 +8,15 @@ import torch
 from PIL import Image
 
 from forge_img2prompt.log import log
-from forge_img2prompt.provider import PromptRequest, PromptResult, StubProvider, _negative_hint, _sampler_hints
+from forge_img2prompt.provider import (
+    LANG_ES,
+    PromptRequest,
+    PromptResult,
+    StubProvider,
+    _negative_hint,
+    _sampler_hints,
+    normalize_language,
+)
 from forge_img2prompt.vl_catalog import VlModelChoice, choice_by_value, default_local_dir, is_local_ready
 from forge_img2prompt.vl_download import download_plan_markdown, ensure_model_downloaded, list_repo_files
 
@@ -27,6 +35,15 @@ _CAPTION_UNCENSORED_EXTRA = (
 )
 
 
+def _language_instruction(language: str) -> str:
+    if normalize_language(language) == LANG_ES:
+        return (
+            "Write the entire prompt in Spanish (Castilian). "
+            "Do not mix English except for unavoidable brand names or on-image text in quotes."
+        )
+    return "Write the entire prompt in English."
+
+
 def _family_hint(family: str) -> str:
     if family == "klein9b":
         return (
@@ -39,10 +56,11 @@ def _family_hint(family: str) -> str:
     )
 
 
-def _build_user_text(notes: str, family: str) -> str:
+def _build_user_text(notes: str, family: str, language: str = LANG_ES) -> str:
     parts = [
         "Describe this image as a ready-to-paste generation prompt.",
         _family_hint(family),
+        _language_instruction(language),
     ]
     notes = (notes or "").strip()
     if notes:
@@ -136,14 +154,23 @@ class QwenVLProvider:
         self._model.eval()
         self._loaded_from = model_path
 
-    def _caption(self, image: Image.Image, notes: str, family: str, *, uncensored: bool = False) -> str:
+    def _caption(
+        self,
+        image: Image.Image,
+        notes: str,
+        family: str,
+        *,
+        language: str = LANG_ES,
+        uncensored: bool = False,
+    ) -> str:
         assert self._model is not None and self._processor is not None
         if image.mode != "RGB":
             image = image.convert("RGB")
 
-        system = _CAPTION_SYSTEM
+        lang = normalize_language(language)
+        system = f"{_CAPTION_SYSTEM} {_language_instruction(lang)}"
         if uncensored:
-            system = f"{_CAPTION_SYSTEM} {_CAPTION_UNCENSORED_EXTRA}"
+            system = f"{system} {_CAPTION_UNCENSORED_EXTRA}"
 
         messages = [
             {
@@ -154,7 +181,7 @@ class QwenVLProvider:
                 "role": "user",
                 "content": [
                     {"type": "image", "image": image},
-                    {"type": "text", "text": _build_user_text(notes, family)},
+                    {"type": "text", "text": _build_user_text(notes, family, lang)},
                 ],
             },
         ]
@@ -238,6 +265,7 @@ class QwenVLProvider:
                 request.image,
                 request.user_notes,
                 stack.family,
+                language=request.language,
                 uncensored=choice.is_uncensored,
             )
             report(1.0, "Caption listo")
@@ -265,13 +293,16 @@ class QwenVLProvider:
             )
 
         label = "Krea 2" if stack.family == "krea2" else "Klein 9B"
+        lang = normalize_language(request.language)
+        lang_label = "español" if lang == LANG_ES else "English"
         return PromptResult(
             prompt=prompt,
             negative_hint=_negative_hint(stack.family, stack.variant),
             sampler_hints=hints,
             status=(
                 f"VL {label} ({stack.variant}) · `{choice.hf_id}` "
-                f"desde `{local.name}`. Checkpoint Forge liberado durante el caption."
+                f"desde `{local.name}` · idioma={lang_label}. "
+                "Checkpoint Forge liberado durante el caption."
             ),
         )
 

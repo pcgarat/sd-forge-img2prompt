@@ -10,7 +10,7 @@ from PIL import Image
 from modules import script_callbacks, scripts, shared
 
 from forge_img2prompt.log import log
-from forge_img2prompt.provider import PromptRequest
+from forge_img2prompt.provider import DEFAULT_LANG, LANG_CHOICES, PromptRequest
 from forge_img2prompt.stack import detect_stack, pick_text_encoder
 from forge_img2prompt.vl_catalog import (
     choice_by_value,
@@ -115,12 +115,21 @@ def on_ui_tabs():
                     lines=3,
                     placeholder="Ej: prioriza la chaqueta roja; tono noir…",
                 )
-                vl_dd = gr.Dropdown(
-                    label="Modelo VL",
-                    choices=pairs,
-                    value=default_vl,
-                    interactive=True,
-                )
+                with gr.Row():
+                    vl_dd = gr.Dropdown(
+                        label="Modelo VL",
+                        choices=pairs,
+                        value=default_vl,
+                        interactive=True,
+                        scale=3,
+                    )
+                    lang_dd = gr.Dropdown(
+                        label="Idioma del prompt",
+                        choices=list(LANG_CHOICES),
+                        value=DEFAULT_LANG,
+                        interactive=True,
+                        scale=1,
+                    )
                 download_plan = gr.Markdown(value=_plan_for_value(default_vl))
                 with gr.Row():
                     generate_btn = gr.Button("Generate", variant="primary")
@@ -138,7 +147,13 @@ def on_ui_tabs():
                     send_t2i = gr.Button("Send to txt2img")
                     send_i2i = gr.Button("Send to img2img")
 
-        def _generate_with_plan(img: Image.Image | None, notes_val: str, vl_value: str, progress=gr.Progress(track_tqdm=True)):
+        def _generate_with_plan(
+            img: Image.Image | None,
+            notes_val: str,
+            vl_value: str,
+            language: str,
+            progress=gr.Progress(track_tqdm=True),
+        ):
             from huggingface_hub import hf_hub_download
 
             stack = _current_stack()
@@ -241,7 +256,12 @@ def on_ui_tabs():
                 progress(0.72 + 0.28 * frac, desc=desc)
 
             result = _PROVIDER.generate(
-                PromptRequest(image=img, user_notes=notes_val or "", stack=stack),
+                PromptRequest(
+                    image=img,
+                    user_notes=notes_val or "",
+                    stack=stack,
+                    language=language,
+                ),
                 vl_value=choice.value,
                 progress=on_prog_cap,
             )
@@ -254,7 +274,7 @@ def on_ui_tabs():
         vl_dd.change(fn=_plan_for_value, inputs=[vl_dd], outputs=[download_plan])
         generate_btn.click(
             fn=_generate_with_plan,
-            inputs=[image, notes, vl_dd],
+            inputs=[image, notes, vl_dd, lang_dd],
             outputs=[prompt_out, hints_out, status_out, download_plan],
         )
         refresh_btn.click(fn=_refresh_stack, inputs=[], outputs=[status_out])

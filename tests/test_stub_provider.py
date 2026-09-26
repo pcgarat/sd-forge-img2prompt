@@ -1,4 +1,4 @@
-from forge_img2prompt.provider import StubProvider, PromptRequest
+from forge_img2prompt.provider import LANG_EN, LANG_ES, StubProvider, PromptRequest
 from forge_img2prompt.stack import detect_stack
 
 
@@ -17,6 +17,7 @@ def test_stub_rewrites_notes_to_prose():
             image=None,
             user_notes="a red ceramic teapot on a wooden table in morning light",
             stack=_krea(),
+            language=LANG_EN,
         )
     )
     assert "teapot" in result.prompt.lower()
@@ -27,8 +28,8 @@ def test_stub_rewrites_notes_to_prose():
 
 def test_different_notes_produce_different_prompts():
     provider = StubProvider()
-    a = provider.generate(PromptRequest(None, "a blue sports car at dusk", _krea())).prompt
-    b = provider.generate(PromptRequest(None, "an old wooden cabin in snow", _krea())).prompt
+    a = provider.generate(PromptRequest(None, "a blue sports car at dusk", _krea(), LANG_EN)).prompt
+    b = provider.generate(PromptRequest(None, "an old wooden cabin in snow", _krea(), LANG_EN)).prompt
     assert a != b
     assert "sports car" in a.lower()
     assert "cabin" in b.lower()
@@ -37,7 +38,7 @@ def test_different_notes_produce_different_prompts():
 def test_stub_klein_hints():
     provider = StubProvider()
     result = provider.generate(
-        PromptRequest(image=None, user_notes="a cat on a windowsill", stack=_klein())
+        PromptRequest(image=None, user_notes="a cat on a windowsill", stack=_klein(), language=LANG_EN)
     )
     assert "cat" in result.prompt.lower()
     assert "4 steps" in result.sampler_hints or "Klein" in result.sampler_hints
@@ -63,5 +64,31 @@ def test_stub_empty_notes_no_fake_prompt():
 def test_stub_softens_tag_soup():
     provider = StubProvider()
     notes = "1girl, solo, long hair, masterpiece, best quality, cyberpunk, neon, city, rain"
-    result = provider.generate(PromptRequest(image=None, user_notes=notes, stack=_krea()))
+    result = provider.generate(
+        PromptRequest(image=None, user_notes=notes, stack=_krea(), language=LANG_EN)
+    )
     assert "natural language" in result.prompt.lower() or "prose" in result.prompt.lower() or "keyword" in result.prompt.lower()
+
+
+def test_stub_spanish_framing():
+    provider = StubProvider()
+    result = provider.generate(
+        PromptRequest(
+            image=None,
+            user_notes="un gato en el alféizar",
+            stack=_krea(),
+            language=LANG_ES,
+        )
+    )
+    assert "gato" in result.prompt.lower()
+    assert "composición" in result.prompt.lower() or "iluminación" in result.prompt.lower()
+    assert "español" in result.status.lower()
+
+
+def test_stub_spanish_tag_soup():
+    provider = StubProvider()
+    notes = "1girl, solo, long hair, masterpiece, best quality, cyberpunk, neon, city, rain"
+    result = provider.generate(
+        PromptRequest(image=None, user_notes=notes, stack=_krea(), language=LANG_ES)
+    )
+    assert "escena detallada" in result.prompt.lower() or "prosa" in result.prompt.lower()
