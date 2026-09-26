@@ -65,3 +65,66 @@ def test_format_plan_marks_and_repo():
     assert "✅" in md and "⬇️" in md
     assert "config.json" in md
     assert "huihui-ai/Huihui-Qwen3-VL-2B-Instruct-abliterated" in md
+
+
+def test_byte_weights_prefer_large_file():
+    from forge_img2prompt.vl_download import DownloadItem, _bytes_total, _item_weight
+
+    items = [
+        DownloadItem("model.safetensors", 4_000_000_000),
+        DownloadItem("config.json", 1000),
+    ]
+    assert _bytes_total(items) == 4_000_001_000
+    assert _item_weight(items[0], items) == 4_000_000_000
+    # El peso del grande es ~100% del progreso; por ficheros sería 50%.
+    assert _item_weight(items[0], items) / _bytes_total(items) > 0.99
+
+
+def test_throttled_file_progress_maps_bytes():
+    from forge_img2prompt.vl_download import _throttled_file_progress
+
+    seen: list[tuple[float, str]] = []
+
+    cb = _throttled_file_progress(
+        filename="model.safetensors",
+        size_label="3.72 GB",
+        progress=lambda f, d: seen.append((f, d)),
+        frac_start=0.1,
+        frac_end=0.8,
+        min_interval_s=0.0,
+    )
+    cb(0, 1000)
+    cb(500, 1000)
+    cb(1000, 1000)
+    assert seen[0][0] == 0.1
+    assert abs(seen[1][0] - 0.45) < 1e-9
+    assert abs(seen[-1][0] - 0.8) < 1e-9
+    assert "50%" in seen[1][1]
+
+
+def test_iter_model_download_already_ready(tmp_path: Path):
+    from forge_img2prompt.vl_download import DownloadEvent, iter_model_download
+
+    (tmp_path / "config.json").write_text("{}")
+    (tmp_path / "model.safetensors").write_bytes(b"x")
+    events = list(iter_model_download(repo_id="unused/repo", local_dir=tmp_path))
+    assert len(events) == 1
+    assert isinstance(events[0], DownloadEvent)
+    assert "ya descargado" in events[0].status.lower() or "listo" in events[0].plan.lower()
+
+
+def test_ensure_model_downloaded_delegates(tmp_path: Path):
+    from forge_img2prompt.vl_download import ensure_model_downloaded
+
+    (tmp_path / "config.json").write_text("{}")
+    (tmp_path / "model.safetensors").write_bytes(b"x")
+    plans: list[str] = []
+    statuses: list[str] = []
+    out = ensure_model_downloaded(
+        repo_id="unused/repo",
+        local_dir=tmp_path,
+        plan_update=plans.append,
+        status_update=statuses.append,
+    )
+    assert out == tmp_path
+    assert plans and statuses

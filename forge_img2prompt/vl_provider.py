@@ -18,7 +18,7 @@ from forge_img2prompt.provider import (
     normalize_language,
 )
 from forge_img2prompt.vl_catalog import VlModelChoice, choice_by_value, default_local_dir, is_local_ready
-from forge_img2prompt.vl_download import download_plan_markdown, ensure_model_downloaded, list_repo_files
+from forge_img2prompt.vl_download import download_plan_markdown, ensure_model_downloaded
 
 ProgressCb = Callable[[float, str], None]
 
@@ -246,8 +246,6 @@ class QwenVLProvider:
         try:
             if not is_local_ready(local):
                 report(0.0, "Preparando descarga del modelo VL…")
-                items = list_repo_files(choice.hf_id)
-                report(0.05, f"Descarga: {len(items)} ficheros · `{choice.hf_id}`")
                 ensure_model_downloaded(
                     repo_id=choice.hf_id,
                     local_dir=local,

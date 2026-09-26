@@ -19,7 +19,7 @@ from forge_img2prompt.vl_catalog import (
     list_vl_models,
     preferred_value,
 )
-from forge_img2prompt.vl_download import download_plan_markdown, format_download_plan, list_repo_files
+from forge_img2prompt.vl_download import download_plan_markdown, iter_model_download
 from forge_img2prompt.vl_provider import CompositeProvider
 
 EXT_DIR = scripts.basedir()
@@ -154,8 +154,6 @@ def on_ui_tabs():
             language: str,
             progress=gr.Progress(track_tqdm=True),
         ):
-            from huggingface_hub import hf_hub_download
-
             stack = _current_stack()
             choice = choice_by_value(vl_value, _CATALOG)
             assert choice is not None
@@ -171,75 +169,32 @@ def on_ui_tabs():
 
             if img is not None and not is_local_ready(dest):
                 try:
-                    items = list_repo_files(choice.hf_id)
+                    for event in iter_model_download(
+                        repo_id=choice.hf_id,
+                        local_dir=dest,
+                        progress=lambda f, d: progress(f * 0.7, desc=d),
+                    ):
+                        yield (
+                            "",
+                            "",
+                            f"**Stack:** `{stack.summary}`\n\n{event.status}",
+                            event.plan,
+                        )
                 except Exception as exc:  # noqa: BLE001
                     yield (
                         "",
                         "",
-                        f"No se pudo listar HF (`{choice.hf_id}`): {exc}",
+                        f"Error descargando `{choice.hf_id}`: {exc}",
                         download_plan_markdown(dest, repo_id=choice.hf_id),
                     )
                     return
-
-                done: set[str] = set()
-                for it in items:
-                    target = dest / it.filename
-                    if target.is_file() and target.stat().st_size > 0:
-                        done.add(it.filename)
-
-                yield (
-                    "",
-                    "",
-                    f"**Stack:** `{stack.summary}`\n\nDescargando {len(items)} ficheros de `{choice.hf_id}`…",
-                    format_download_plan(items, dest, repo_id=choice.hf_id, done=done),
-                )
-
-                total = max(len(items), 1)
-                for it in items:
-                    if it.filename in done:
-                        continue
-                    frac = len(done) / total
-                    progress(frac * 0.7, desc=f"[{len(done)+1}/{total}] {it.filename} ({it.size_label})")
-                    yield (
-                        "",
-                        "",
-                        f"⬇️ `{it.filename}` ({it.size_label})",
-                        format_download_plan(
-                            items, dest, repo_id=choice.hf_id, done=done, current=it.filename
-                        ),
-                    )
-                    try:
-                        hf_hub_download(
-                            repo_id=choice.hf_id,
-                            filename=it.filename,
-                            local_dir=str(dest),
-                            local_dir_use_symlinks=False,
-                            resume_download=True,
-                        )
-                    except Exception as exc:  # noqa: BLE001
-                        yield (
-                            "",
-                            "",
-                            f"Error descargando `{it.filename}`: {exc}",
-                            format_download_plan(
-                                items, dest, repo_id=choice.hf_id, done=done, current=it.filename
-                            ),
-                        )
-                        return
-                    done.add(it.filename)
-                    yield (
-                        "",
-                        "",
-                        f"✅ `{it.filename}`",
-                        format_download_plan(items, dest, repo_id=choice.hf_id, done=done),
-                    )
 
                 if not is_local_ready(dest):
                     yield (
                         "",
                         "",
                         f"Descarga incompleta en `{dest}`",
-                        format_download_plan(items, dest, repo_id=choice.hf_id, done=done),
+                        download_plan_markdown(dest, repo_id=choice.hf_id),
                     )
                     return
 
