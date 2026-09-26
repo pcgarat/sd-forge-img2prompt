@@ -1,4 +1,5 @@
 from pathlib import Path
+from unittest.mock import patch
 
 from forge_img2prompt.vl_catalog import (
     DEFAULT_HF_ID,
@@ -13,23 +14,43 @@ from forge_img2prompt.vl_catalog import (
 )
 
 
-def test_catalog_has_abliterated_and_official():
-    catalog = list_vl_models()
-    assert len(catalog) == len(VL_SPECS) == 3
+def _fake_vision_tags():
+    return ["qwen3-vl:8b-instruct", "kimi-k3:cloud", "gemma4:31b-cloud"]
+
+
+def test_catalog_has_ollama_vision_and_hf():
+    with patch(
+        "forge_img2prompt.ollama_client.list_vision_models",
+        return_value=_fake_vision_tags(),
+    ):
+        catalog = list_vl_models()
+    ollama = [c for c in catalog if c.is_ollama]
+    assert len(ollama) == 3
+    assert len(catalog) == 3 + len(VL_SPECS)
+    assert catalog[0].is_ollama
+    assert catalog[0].value == "ollama:qwen3-vl:8b-instruct"
     ids = {c.hf_id for c in catalog}
     assert "huihui-ai/Huihui-Qwen3-VL-2B-Instruct-abliterated" in ids
     assert "Qwen/Qwen3-VL-2B-Instruct" in ids
     assert "huihui-ai/Huihui-Qwen3-VL-4B-Instruct-abliterated" in ids
+    assert preferred_choice(catalog).is_ollama
+    assert preferred_choice(catalog).hf_id == "qwen3-vl:8b-instruct"
     assert preferred_choice(catalog).recommended
-    assert preferred_choice(catalog).hf_id == DEFAULT_HF_ID
-    assert sole_model_choice().hf_id == DEFAULT_HF_ID
+    assert sole_model_choice().is_ollama
     pairs = dropdown_choices(catalog)
-    assert len(pairs) == 3
-    assert preferred_value(catalog) == preferred_choice(catalog).value
+    assert len(pairs) == 3 + len(VL_SPECS)
+    assert preferred_value(catalog) == "ollama:qwen3-vl:8b-instruct"
+    assert DEFAULT_HF_ID == "huihui-ai/Huihui-Qwen3-VL-2B-Instruct-abliterated"
 
 
-def test_choice_by_value_and_uncensored_flag():
-    catalog = list_vl_models()
+def test_choice_by_value_ollama_and_uncensored():
+    with patch(
+        "forge_img2prompt.ollama_client.list_vision_models",
+        return_value=_fake_vision_tags(),
+    ):
+        catalog = list_vl_models()
+    kimi = choice_by_value("ollama:kimi-k3:cloud", catalog)
+    assert kimi is not None and kimi.hf_id == "kimi-k3:cloud"
     abl = next(c for c in catalog if "abliterated" in c.hf_id and "2B" in c.hf_id)
     assert abl.is_uncensored
     official = next(c for c in catalog if c.hf_id.startswith("Qwen/"))

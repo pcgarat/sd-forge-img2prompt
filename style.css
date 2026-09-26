@@ -1,0 +1,150 @@
+/* Contener el ImageEditor: sin fixed_canvas la foto nativa desborda el bloque */
+#img2prompt_image_editor {
+  max-width: 100%;
+}
+
+#img2prompt_image_editor .image-container,
+#img2prompt_image_editor [data-testid="image"],
+#img2prompt_image_editor .upload-container,
+#img2prompt_image_editor .wrap,
+#img2prompt_image_editor .empty {
+  max-width: 100% !important;
+  max-height: 520px !important;
+  overflow: hidden !important;
+}
+
+#img2prompt_image_editor canvas,
+#img2prompt_image_editor img,
+#img2prompt_image_editor .image-frame,
+#img2prompt_image_editor .image-frame img {
+  max-width: 100% !important;
+  max-height: 520px !important;
+  width: auto !important;
+  height: auto !important;
+  object-fit: contain !important;
+}
+
+/* Gradio Image pinta el <img> a tamaño nativo del crop; hay que contenerlo */
+#img2prompt_crop_preview {
+  max-width: 100%;
+  width: 100%;
+}
+
+#img2prompt_crop_preview .image-container,
+#img2prompt_crop_preview [data-testid="image"],
+#img2prompt_crop_preview .wrap,
+#img2prompt_crop_preview .empty,
+#img2prompt_crop_preview .image-frame {
+  max-width: 100% !important;
+  max-height: 140px !important;
+  height: 140px !important;
+  overflow: hidden !important;
+  display: flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+}
+
+#img2prompt_crop_preview img,
+#img2prompt_crop_preview .image-frame img {
+  max-width: 100% !important;
+  max-height: 140px !important;
+  width: auto !important;
+  height: auto !important;
+  object-fit: contain !important;
+}
+
+/* Dual-thumb range (two stacked <input type=range>) */
+.img2prompt-dual {
+  --img2prompt-lo: 20%;
+  --img2prompt-hi: 60%;
+  margin: 0.35rem 0 0.75rem;
+  padding: 0.35rem 0.15rem 0.55rem;
+}
+
+.img2prompt-dual-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 0.75rem;
+  margin-bottom: 0.35rem;
+  font-size: 0.95rem;
+}
+
+.img2prompt-dual-values {
+  font-variant-numeric: tabular-nums;
+  opacity: 0.9;
+}
+
+.img2prompt-dual-sliders {
+  position: relative;
+  height: 1.6rem;
+  display: flex;
+  align-items: center;
+}
+
+.img2prompt-dual-sliders::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  height: 0.35rem;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--body-text-color, #888) 22%, transparent);
+  pointer-events: none;
+}
+
+.img2prompt-dual-sliders::after {
+  content: "";
+  position: absolute;
+  left: var(--img2prompt-lo);
+  right: calc(100% - var(--img2prompt-hi));
+  height: 0.35rem;
+  border-radius: 999px;
+  background: var(--primary-500, #f97316);
+  pointer-events: none;
+}
+
+.img2prompt-dual-sliders input[type="range"] {
+  position: absolute;
+  inset: 0;
+  margin: 0;
+  width: 100%;
+  appearance: none;
+  background: transparent;
+  pointer-events: none;
+}
+
+.img2prompt-dual-sliders input[type="range"]::-webkit-slider-thumb {
+  appearance: none;
+  width: 1rem;
+  height: 1rem;
+  border-radius: 50%;
+  background: var(--primary-500, #f97316);
+  border: 2px solid var(--body-background-fill, #111);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--primary-500, #f97316) 50%, transparent);
+  pointer-events: auto;
+  cursor: pointer;
+}
+
+.img2prompt-dual-sliders input[type="range"]::-moz-range-thumb {
+  width: 1rem;
+  height: 1rem;
+  border-radius: 50%;
+  background: var(--primary-500, #f97316);
+  border: 2px solid var(--body-background-fill, #111);
+  pointer-events: auto;
+  cursor: pointer;
+}
+
+.img2prompt-dual-sliders input[type="range"]::-webkit-slider-runnable-track,
+.img2prompt-dual-sliders input[type="range"]::-moz-range-track {
+  background: transparent;
+  height: 0.35rem;
+  border: none;
+}
+
+/* Hide Gradio bridge textboxes used by the dual-range JS */
+#img2prompt_gen_range,
+#img2prompt_det_range {
+  display: none !important;
+}

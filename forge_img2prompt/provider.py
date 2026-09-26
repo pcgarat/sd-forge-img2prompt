@@ -20,6 +20,78 @@ LANG_CHOICES: tuple[tuple[str, str], ...] = (
 )
 DEFAULT_LANG = LANG_ES
 
+# Rangos de palabras (UI + providers). Bounds = límites absolutos del slider.
+GEN_WORDS_BOUNDS: tuple[int, int] = (20, 500)
+GEN_WORDS_DEFAULT: tuple[int, int] = (45, 90)
+DETAIL_WORDS_BOUNDS: tuple[int, int] = (5, 500)
+DETAIL_WORDS_DEFAULT: tuple[int, int] = (8, 25)
+# Techo de tokens (~1.35× palabras + margen) para el máximo del slider (500 → ~687).
+WORDS_TOKEN_CEIL: int = 720
+# 0 = no descartar por solapamiento; N = descartar si hay ≥ N tokens de contenido compartidos
+OVERLAP_DISCARD_BOUNDS: tuple[int, int] = (0, 40)
+OVERLAP_DISCARD_DEFAULT: int = 10
+
+
+def clamp_word_range(
+    lo: int | float | None,
+    hi: int | float | None,
+    *,
+    bounds: tuple[int, int],
+    default: tuple[int, int],
+) -> tuple[int, int]:
+    """Normalize (min, max) inside absolute bounds; swap if inverted."""
+    floor, ceil = bounds
+    d_lo, d_hi = default
+    try:
+        a = int(round(float(lo))) if lo is not None else d_lo
+    except (TypeError, ValueError):
+        a = d_lo
+    try:
+        b = int(round(float(hi))) if hi is not None else d_hi
+    except (TypeError, ValueError):
+        b = d_hi
+    a = max(floor, min(ceil, a))
+    b = max(floor, min(ceil, b))
+    if a > b:
+        a, b = b, a
+    return a, b
+
+
+def count_words(text: str) -> int:
+    return len((text or "").split())
+
+
+def max_tokens_for_words(
+    word_max: int, *, floor: int = 32, ceil: int = WORDS_TOKEN_CEIL
+) -> int:
+    """Token budget capped near word_max so the model cannot ramble forever."""
+    # ~1.35 tokens/word + small cushion; lower than before so max is harder to blow past
+    return max(floor, min(ceil, int(word_max * 1.35) + 12))
+
+
+def clamp_text_to_words(text: str, word_max: int) -> str:
+    """Hard-cap prose to ``word_max`` words, preferring a sentence end when possible."""
+    words = (text or "").split()
+    if not words:
+        return ""
+    if word_max <= 0 or len(words) <= word_max:
+        return " ".join(words)
+    truncated = words[:word_max]
+    # Prefer ending on .!? anywhere in the allowed window (keep ≥1 word)
+    for i in range(len(truncated) - 1, 0, -1):
+        if truncated[i][-1] in ".!?":
+            return " ".join(truncated[: i + 1])
+    return " ".join(truncated)
+
+
+def clamp_overlap_discard(value: int | float | None) -> int:
+    floor, ceil = OVERLAP_DISCARD_BOUNDS
+    try:
+        n = int(round(float(value))) if value is not None else OVERLAP_DISCARD_DEFAULT
+    except (TypeError, ValueError):
+        n = OVERLAP_DISCARD_DEFAULT
+    return max(floor, min(ceil, n))
+
 
 @dataclass(frozen=True)
 class PromptRequest:
@@ -27,6 +99,225 @@ class PromptRequest:
     user_notes: str
     stack: StackInfo
     language: str = DEFAULT_LANG
+    word_min: int = GEN_WORDS_DEFAULT[0]
+    word_max: int = GEN_WORDS_DEFAULT[1]
+
+
+@dataclass(frozen=True)
+class DetailRequest:
+    """Crop of a painted region; base_prompt is scene context only (not mutated)."""
+
+    crop: Image.Image
+    base_prompt: str
+    stack: StackInfo
+    language: str = DEFAULT_LANG
+    user_notes: str = ""
+    word_min: int = DETAIL_WORDS_DEFAULT[0]
+    word_max: int = DETAIL_WORDS_DEFAULT[1]
+    overlap_discard: int = OVERLAP_DISCARD_DEFAULT
+
+
+def append_detail(base: str, detail: str) -> str:
+    """Join base prompt and a detail fragment into one prose string."""
+    base = " ".join((base or "").split()).strip()
+    detail = " ".join((detail or "").split()).strip()
+    if not detail:
+        return base
+    if detail[0].islower():
+        detail = detail[0].upper() + detail[1:]
+    if detail[-1] not in ".!?":
+        detail += "."
+    if not base:
+        return detail
+    if base[-1] not in ".!?":
+        base += "."
+    return f"{base} {detail}"
+
+
+def scene_context_snippet(base: str, *, max_chars: int = 280) -> str:
+    """Short scene text for zone identity only (not a full prompt to retell)."""
+    text = " ".join((base or "").split()).strip()
+    if not text:
+        return ""
+    if len(text) <= max_chars:
+        return text
+    cut = text[:max_chars]
+    # Prefer breaking at a sentence end
+    for sep in (". ", "! ", "? ", "; "):
+        idx = cut.rfind(sep)
+        if idx >= max_chars // 3:
+            return cut[: idx + 1].strip()
+    idx = cut.rfind(" ")
+    if idx > 0:
+        cut = cut[:idx]
+    return cut.rstrip(",;:") + "…"
+
+
+def normalize_zone_anchor(text: str, *, max_words: int = 12) -> str:
+    """Clean identify-step output into a short noun phrase."""
+    raw = " ".join((text or "").split()).strip().strip("\"'`")
+    if not raw:
+        return ""
+    # Take first line / clause
+    for sep in (".", "\n", ";", ":"):
+        if sep in raw:
+            raw = raw.split(sep, 1)[0].strip()
+            break
+    words = raw.split()
+    if len(words) > max_words:
+        raw = " ".join(words[:max_words])
+    return raw.strip(" ,;-")
+
+
+def detail_looks_like_tag_soup(detail: str) -> bool:
+    """True when the fragment is a comma-separated attribute list, not prose."""
+    text = " ".join((detail or "").split()).strip()
+    if not text:
+        return True
+    commas = text.count(",")
+    if commas >= 4:
+        return True
+    # Many short comma chunks: "barba, cabello, piel, ojos"
+    parts = [p.strip() for p in text.split(",") if p.strip()]
+    if len(parts) >= 4 and sum(1 for p in parts if len(p.split()) <= 3) >= 3:
+        return True
+    return False
+
+
+_STOPWORDS = frozenset(
+    {
+        "a",
+        "al",
+        "con",
+        "de",
+        "del",
+        "el",
+        "en",
+        "la",
+        "las",
+        "los",
+        "un",
+        "una",
+        "unos",
+        "unas",
+        "y",
+        "e",
+        "o",
+        "u",
+        "que",
+        "se",
+        "su",
+        "sus",
+        "por",
+        "para",
+        "como",
+        "más",
+        "mas",
+        "muy",
+        "the",
+        "and",
+        "with",
+        "from",
+        "for",
+        "into",
+        "onto",
+        "his",
+        "her",
+        "their",
+        "this",
+        "that",
+        "of",
+        "in",
+        "on",
+        "at",
+        "to",
+        "an",
+    }
+)
+
+
+def _token_set(text: str) -> set[str]:
+    return {
+        t
+        for t in "".join(c.lower() if c.isalnum() else " " for c in text).split()
+        if len(t) > 2 and t not in _STOPWORDS
+    }
+
+
+def shared_content_count(base: str, detail: str) -> int:
+    """How many content tokens (no stopwords) appear in both texts."""
+    return len(_token_set(base) & _token_set(detail))
+
+
+def detail_is_redundant(
+    base: str,
+    detail: str,
+    *,
+    max_shared: int = OVERLAP_DISCARD_DEFAULT,
+) -> bool:
+    """True when detail shares too many content words with the base prompt.
+
+    ``max_shared <= 0`` disables this check (never discard for overlap).
+    Otherwise discard when shared content tokens >= ``max_shared``, or when the
+    whole detail is a literal substring of the base.
+    """
+    if max_shared <= 0:
+        return False
+    detail_t = _token_set(detail)
+    if not detail_t:
+        return True
+    shared = shared_content_count(base, detail)
+    if shared >= max_shared:
+        return True
+    b = " ".join((base or "").lower().split())
+    d = " ".join((detail or "").lower().split())
+    if len(d) >= 40 and d in b:
+        return True
+    return False
+
+
+_SCENE_LEAK_HINTS = (
+    "mujer",
+    "hombre y",
+    "y una mujer",
+    "y un hombre",
+    "sentados",
+    "sentadas",
+    "pareja",
+    "mesa",
+    "pared",
+    "fondo",
+    "habitación",
+    "habitacion",
+    "escenario",
+    "woman",
+    "man and",
+    "and a woman",
+    "and a man",
+    "sitting",
+    "couple",
+    "table",
+    "background",
+    "wooden wall",
+    "room",
+)
+
+
+def detail_looks_like_full_scene(detail: str, *, word_max: int | None = None) -> bool:
+    """Heuristic: fragment reads like a full-scene caption, not a zone label."""
+    text = " ".join((detail or "").lower().split())
+    if not text:
+        return True
+    words = text.split()
+    if word_max is not None and len(words) > max(word_max * 2, word_max + 15):
+        return True
+    hits = sum(1 for h in _SCENE_LEAK_HINTS if h in text)
+    if hits >= 2:
+        return True
+    # Multiple subjects joined with "y una/un" is a strong full-scene signal
+    if " y una " in text or " y un " in text or " and a " in text:
+        return True
+    return False
 
 
 def normalize_language(language: str | None) -> str:
@@ -44,6 +335,7 @@ class PromptResult:
     negative_hint: str
     sampler_hints: str
     status: str = ""
+    fragment: str = ""  # solo el texto de detalle de zona (detail())
 
 
 class PromptProvider(Protocol):
