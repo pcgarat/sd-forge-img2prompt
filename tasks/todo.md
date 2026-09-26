@@ -10,7 +10,9 @@ Repo: https://github.com/pcgarat/sd-forge-img2prompt
 - [x] Montaje dev docker-neo (`IMG2PROMPT_EXT_PATH`)
 - [x] Backend VL: catálogo Instruct (Huihui 2B/4B abliterated + Qwen 2B) + descarga TextEncoders + checklist/progreso
 - [x] Log progresivo en terminal Forge (`[img2prompt] …`)
+- [x] Máscara → detalle (crop bbox + append al prompt) · rama `feat/mask-add-detail`
 - [ ] Smoke VL real (Huihui 2B abliterated + caption con imagen)
+- [ ] Smoke máscara: Generate → pintar → Añadir detalle → Send
 - [ ] (Ask first) make target `img2prompt-ext` en docker-neo
 - [ ] GGUF / llama.cpp (opcional)
 - [x] ~~Task 3 seed extensions/~~ cancelada — repo dedicado
@@ -18,3 +20,5 @@ Repo: https://github.com/pcgarat/sd-forge-img2prompt
 ## Fuera de ciclo
 
 - Auto sampler/CFG, AlwaysVisible
+- Rewrite del prompt completo desde máscara / imagen atenuada
+- Multi-máscaras en paralelo

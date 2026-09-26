@@ -104,11 +104,28 @@ sd-forge-img2prompt/
   forge_img2prompt/
     __init__.py
     stack.py
-    provider.py               # Protocol + StubProvider
+    provider.py               # Protocol + StubProvider + DetailRequest + append_detail
+    mask_crop.py              # ImageEditor brush → bbox crop
+    vl_provider.py            # Qwen VL generate + detail
   tests/
     test_stack.py
     test_stub_provider.py
+    test_mask_crop.py
+    test_append_detail.py
 ```
+
+---
+
+## Feature: máscara → detalle (post-v1)
+
+Flujo: **Generate** (caption global) → pintar zona en `gr.ImageEditor` (`layers=False`) → **Añadir detalle**.
+
+- Crop del bounding box de la capa de pincel (`mask_crop.crop_from_editor`).
+- VL con prompt de detalle (`DetailRequest` / `CompositeProvider.detail`), `max_new_tokens≈120`.
+- El fragmento va a **Prompt de la zona**; el prompt general no se modifica.
+- Validaciones: prompt previo + máscara no vacía; si falla, status claro y prompt intacto.
+
+Fuera de alcance de esta feature: rewrite completo, imagen atenuada, inpaint/ControlNet, multi-máscaras.
 
 ---
 
@@ -116,7 +133,7 @@ sd-forge-img2prompt/
 
 - Extensión como las Neo con pestaña propia: `script_callbacks.on_ui_tabs`, `analytics_enabled=False`.
 - Nombres en inglés en código; UI y docs de usuario en español.
-- Sin lógica de prompt acoplada a Gradio: UI → `PromptRequest` → `PromptProvider` → `PromptResult` → textbox + paste_params.
+- Sin lógica de prompt acoplada a Gradio: UI → `PromptRequest` / `DetailRequest` → provider → textbox + paste_params.
 - Send-to: `modules.infotext_utils` (no `generation_parameters_copypaste`). Guardar `scripts.basedir()` en import si se necesitan paths.
 
 Ejemplo de contrato (ilustrativo):
