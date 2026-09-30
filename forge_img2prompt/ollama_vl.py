@@ -38,10 +38,14 @@ from forge_img2prompt.vl_provider import (
     _CAPTION_UNCENSORED_EXTRA,
     _DETAIL_SYSTEM,
     _IDENTIFY_SYSTEM,
+    _NOTES_SYSTEM,
     _build_detail_user_text,
     _build_identify_user_text,
+    _build_notes_only_user_text,
     _build_user_text,
     _language_instruction,
+    _pack_primary_and_refs,
+    _pack_refs_only,
     _word_range_instruction,
 )
 
@@ -80,10 +84,15 @@ class OllamaVLProvider:
         word_min: int = GEN_WORDS_DEFAULT[0],
         word_max: int = GEN_WORDS_DEFAULT[1],
         model: str | None = None,
+        ref_slots=None,
+        ref_images=None,
     ) -> str:
         lang = normalize_language(language)
         wmin, wmax = clamp_word_range(
             word_min, word_max, bounds=GEN_WORDS_BOUNDS, default=GEN_WORDS_DEFAULT
+        )
+        packed, indices = _pack_primary_and_refs(
+            image, ref_slots=ref_slots, ref_images=ref_images
         )
         system = (
             f"{_CAPTION_SYSTEM} {_language_instruction(lang)} "
@@ -92,9 +101,55 @@ class OllamaVLProvider:
         if uncensored:
             system = f"{system} {_CAPTION_UNCENSORED_EXTRA}"
         return self._run(
-            image,
+            packed,
             system,
-            _build_user_text(notes, family, lang, word_min=wmin, word_max=wmax),
+            _build_user_text(
+                notes,
+                family,
+                lang,
+                word_min=wmin,
+                word_max=wmax,
+                ref_count=len(indices),
+                ref_indices=indices,
+            ),
+            max_new_tokens=max_tokens_for_words(wmax, floor=64),
+            model=model,
+        )
+
+    def _from_notes(
+        self,
+        notes: str,
+        family: str,
+        *,
+        language: str = LANG_ES,
+        uncensored: bool = False,
+        word_min: int = GEN_WORDS_DEFAULT[0],
+        word_max: int = GEN_WORDS_DEFAULT[1],
+        model: str | None = None,
+        ref_slots=None,
+    ) -> str:
+        lang = normalize_language(language)
+        wmin, wmax = clamp_word_range(
+            word_min, word_max, bounds=GEN_WORDS_BOUNDS, default=GEN_WORDS_DEFAULT
+        )
+        packed, indices = _pack_refs_only(ref_slots=ref_slots)
+        system = (
+            f"{_NOTES_SYSTEM} {_language_instruction(lang)} "
+            f"{_word_range_instruction(wmin, wmax)}"
+        )
+        if uncensored:
+            system = f"{system} {_CAPTION_UNCENSORED_EXTRA}"
+        return self._run(
+            packed or None,
+            system,
+            _build_notes_only_user_text(
+                notes,
+                family,
+                lang,
+                word_min=wmin,
+                word_max=wmax,
+                ref_indices=indices,
+            ),
             max_new_tokens=max_tokens_for_words(wmax, floor=64),
             model=model,
         )
@@ -132,6 +187,8 @@ class OllamaVLProvider:
         word_min: int = DETAIL_WORDS_DEFAULT[0],
         word_max: int = DETAIL_WORDS_DEFAULT[1],
         model: str | None = None,
+        ref_slots=None,
+        ref_images=None,
     ) -> str:
         lang = normalize_language(language)
         wmin, wmax = clamp_word_range(
@@ -140,6 +197,9 @@ class OllamaVLProvider:
             bounds=DETAIL_WORDS_BOUNDS,
             default=DETAIL_WORDS_DEFAULT,
         )
+        packed, indices = _pack_primary_and_refs(
+            crop, ref_slots=ref_slots, ref_images=ref_images
+        )
         system = (
             f"{_DETAIL_SYSTEM} {_language_instruction(lang)} "
             f"{_word_range_instruction(wmin, wmax)} Hard limit: ≤{wmax} words."
@@ -147,10 +207,16 @@ class OllamaVLProvider:
         if uncensored:
             system = f"{system} {_CAPTION_UNCENSORED_EXTRA}"
         raw = self._run(
-            crop,
+            packed,
             system,
             _build_detail_user_text(
-                notes, lang, anchor=anchor, word_min=wmin, word_max=wmax
+                notes,
+                lang,
+                anchor=anchor,
+                word_min=wmin,
+                word_max=wmax,
+                ref_count=len(indices),
+                ref_indices=indices,
             ),
             max_new_tokens=max_tokens_for_words(wmax, floor=24),
             model=model,
@@ -181,12 +247,17 @@ class OllamaVLProvider:
                 status=f"Stack no reconocido. Detectado: {stack.summary}.",
             )
         if request.image is None:
-            return PromptResult(
-                prompt="",
-                negative_hint="",
-                sampler_hints=hints,
-                status="Ollama VL necesita una imagen. Súbela/pégala, o usa solo Notas (stub).",
-            )
+            notes = (request.user_notes or "").strip()
+            if not notes:
+                return PromptResult(
+                    prompt="",
+                    negative_hint="",
+                    sampler_hints=hints,
+                    status=(
+                        "Sin imagen principal: escribe en **Notas** qué quieres "
+                        "generar y pulsa Generate (Ollama ampliará el brief)."
+                    ),
+                )
 
         wmin, wmax = clamp_word_range(
             request.word_min,
@@ -195,19 +266,34 @@ class OllamaVLProvider:
             default=GEN_WORDS_DEFAULT,
         )
         prompt = ""
+        notes_only = request.image is None
         try:
             report(0.15, f"Ollama `{cfg.model}` en {cfg.base_url}…")
-            report(0.4, "Generando caption (Ollama)…")
-            prompt = self._caption(
-                request.image,
-                request.user_notes,
-                stack.family,
-                language=request.language,
-                uncensored=choice.is_uncensored,
-                word_min=wmin,
-                word_max=wmax,
-                model=choice.hf_id,
-            )
+            if notes_only:
+                report(0.4, "Expandiendo notas a prompt (Ollama)…")
+                prompt = self._from_notes(
+                    request.user_notes,
+                    stack.family,
+                    language=request.language,
+                    uncensored=choice.is_uncensored,
+                    word_min=wmin,
+                    word_max=wmax,
+                    model=choice.hf_id,
+                    ref_slots=request.ref_slots,
+                )
+            else:
+                report(0.4, "Generando caption (Ollama)…")
+                prompt = self._caption(
+                    request.image,
+                    request.user_notes,
+                    stack.family,
+                    language=request.language,
+                    uncensored=choice.is_uncensored,
+                    word_min=wmin,
+                    word_max=wmax,
+                    model=choice.hf_id,
+                    ref_slots=request.ref_slots,
+                )
             report(1.0, "Caption Ollama listo")
         except Exception as exc:  # noqa: BLE001
             log(f"ERROR Ollama VL: {exc}")
@@ -237,15 +323,16 @@ class OllamaVLProvider:
         label = "Krea 2" if stack.family == "krea2" else "Klein 9B"
         lang = normalize_language(request.language)
         lang_label = "español" if lang == LANG_ES else "English"
+        mode = "notas→prompt" if notes_only else "imagen→prompt"
         return PromptResult(
             prompt=prompt,
             negative_hint=_negative_hint(stack.family, stack.variant),
             sampler_hints=hints,
             status=(
                 f"Ollama {label} ({stack.variant}) · `{cfg.model}` "
-                f"@ `{cfg.base_url}` · idioma={lang_label} · "
+                f"@ `{cfg.base_url}` · {mode} · idioma={lang_label} · "
                 f"{n_words} palabras (rango {wmin}–{wmax}){range_note}. "
-                "VRAM Forge intacta (VL en proceso Ollama)."
+                "VRAM Forge intacta (VL en Ollama; keep_alive=0 → descarga tras caption)."
             ),
         )
 
@@ -319,6 +406,7 @@ class OllamaVLProvider:
                 word_min=wmin,
                 word_max=wmax,
                 model=choice.hf_id,
+                ref_slots=request.ref_slots,
             )
             report(1.0, "Detalle Ollama listo")
         except Exception as exc:  # noqa: BLE001
@@ -344,7 +432,7 @@ class OllamaVLProvider:
                 negative_hint="",
                 sampler_hints=hints,
                 status=(
-                    f"Ollama `{cfg.model}` devolvió tags en lugar de prosa; "
+                    f"Ollama `{cfg.model}` devolvió tags en lugar de lenguaje natural; "
                     "no se añadió. Reintenta o umbral de descarte a 0."
                 ),
                 fragment="",

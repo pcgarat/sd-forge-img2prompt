@@ -214,6 +214,38 @@ def test_chat_with_image_builds_native_payload(monkeypatch):
     assert msgs[0]["role"] == "system"
     assert msgs[1]["role"] == "user"
     assert "images" in msgs[1] and len(msgs[1]["images"]) == 1
+    assert captured["body"].get("keep_alive") == 0
+
+
+def test_chat_with_multiple_images(monkeypatch):
+    cfg = OllamaConfig(
+        base_url="http://127.0.0.1:11434",
+        model="qwen3-vl:8b-instruct",
+        api_key="",
+        timeout=30,
+    )
+    captured: dict = {}
+
+    class _Resp:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def read(self):
+            return json.dumps(
+                {"message": {"role": "assistant", "content": "ok"}}
+            ).encode()
+
+    def fake_urlopen(req, timeout=None):
+        captured["body"] = json.loads(req.data.decode())
+        return _Resp()
+
+    imgs = [_red_png(), Image.new("RGB", (8, 8), (0, 255, 0))]
+    with patch("forge_img2prompt.ollama_client.urllib.request.urlopen", fake_urlopen):
+        chat_with_image(cfg, system="", user_text="refs", image=imgs, num_predict=16)
+    assert len(captured["body"]["messages"][0]["images"]) == 2
 
 
 def test_chat_connection_error_message():

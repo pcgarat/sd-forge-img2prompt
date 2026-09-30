@@ -41,6 +41,7 @@ from forge_img2prompt.provider import (
     DetailRequest,
     PromptRequest,
     clamp_overlap_discard,
+    normalize_ref_slots,
 )
 from forge_img2prompt.stack import detect_stack, pick_text_encoder
 from forge_img2prompt.ollama_client import ping_tags
@@ -158,6 +159,28 @@ def _plan_for_value(vl_value: str) -> str:
     return download_plan_markdown(dest, repo_id=choice.hf_id)
 
 
+def _ref_image_slot(label: str, elem_id: str):
+    """Gradio Image slot; tolerates older kwargs."""
+    kwargs: dict[str, Any] = {
+        "label": label,
+        "type": "pil",
+        "height": 120,
+        "elem_id": elem_id,
+    }
+    try:
+        return gr.Image(**kwargs, sources=["upload", "clipboard"])
+    except TypeError:
+        return gr.Image(**kwargs)
+
+
+def _ref_image_row(prefix: str) -> tuple:
+    return (
+        _ref_image_slot("Foto 1", f"img2prompt_{prefix}_ref1"),
+        _ref_image_slot("Foto 2", f"img2prompt_{prefix}_ref2"),
+        _ref_image_slot("Foto 3", f"img2prompt_{prefix}_ref3"),
+    )
+
+
 def on_ui_tabs():
     log("registrando pestaña Image → Prompt")
     pairs = dropdown_choices(_CATALOG)
@@ -180,11 +203,16 @@ def on_ui_tabs():
             "Ollama: elige el modelo aquí; conexión en "
             "**Settings → Image → Prompt / Ollama** (URL, API key, timeout). "
             "Transformers: en 8 GB elige **Huihui 2B**; el **4B** puede OOM.\n\n"
-            "Sin imagen → stub solo con **Notas**. "
+            "Sin imagen → escribe en **Notas** el brief; el modelo VL/Ollama "
+            "lo amplía a un prompt con detalles (refs foto 1–3 opcionales). "
             "Tras Generate, pinta una **máscara** (pincel magenta) sobre la zona "
             "y pulsa **Añadir detalle**: se analiza **solo lo pintado** "
             "(el resto se tapa en gris) y el texto va a **Prompt de la zona** "
-            "(no se mezcla solo con el prompt general). Opcional: notas de zona."
+            "(no se mezcla solo con el prompt general). Opcional: notas de zona.\n\n"
+            "Referencias opcionales (**Foto 1–3**): adjunta 1–3 imágenes junto a las "
+            "notas (general o de zona) y menciónalas ahí "
+            "(p. ej. *el chico lleve el sombrero de la foto 1*). "
+            "Requieren imagen principal + modelo VL."
         )
         with gr.Row():
             with gr.Column(scale=1):
@@ -238,14 +266,31 @@ def on_ui_tabs():
                     label="Notas de zona (solo para Añadir detalle)",
                     lines=2,
                     placeholder="Opcional: p. ej. barba / costura / ojos… "
+                    "o «el sombrero de la foto 1». "
                     "No uses aquí las notas globales de la escena.",
                 )
+                with gr.Accordion("Referencias de zona (foto 1–3, opcional)", open=False):
+                    gr.Markdown(
+                        "Adjunta hasta 3 imágenes y cítalas en **Notas de zona** "
+                        "como *foto 1*, *foto 2* o *foto 3* (según el slot)."
+                    )
+                    with gr.Row():
+                        zone_ref1, zone_ref2, zone_ref3 = _ref_image_row("zone")
 
                 notes = gr.Textbox(
-                    label="Notas / descripción (opcional, solo Generate)",
+                    label="Notas / descripción (Generate; obligatorias sin imagen)",
                     lines=3,
-                    placeholder="Ej: prioriza la chaqueta roja; tono noir…",
+                    placeholder="Con imagen: prioriza la chaqueta… / Sin imagen: "
+                    "un astronauta en Marte al atardecer… "
+                    "(el modelo añade detalle visual).",
                 )
+                with gr.Accordion("Referencias Generate (foto 1–3, opcional)", open=False):
+                    gr.Markdown(
+                        "Adjunta hasta 3 imágenes y cítalas en **Notas** "
+                        "como *foto 1*, *foto 2* o *foto 3* (según el slot)."
+                    )
+                    with gr.Row():
+                        gen_ref1, gen_ref2, gen_ref3 = _ref_image_row("gen")
                 with gr.Row():
                     vl_dd = gr.Dropdown(
                         label="Modelo VL",
@@ -373,22 +418,28 @@ def on_ui_tabs():
             vl_value: str,
             language: str,
             gen_raw: str,
+            ref1=None,
+            ref2=None,
+            ref3=None,
             progress=gr.Progress(track_tqdm=True),
         ):
             stack = _current_stack()
             choice = choice_by_value(vl_value, _CATALOG)
             assert choice is not None
             img = editor_to_rgb(editor)
+            refs = normalize_ref_slots(ref1, ref2, ref3)
             wmin, wmax = parse_range_text(
                 gen_raw, bounds=GEN_WORDS_BOUNDS, default=GEN_WORDS_DEFAULT
             )
             plan = _plan_for_value(choice.value)
+            n_refs = sum(1 for r in refs if r is not None)
+            refs_status = f" · {n_refs} ref(s)" if n_refs else ""
 
             yield (
                 "",
                 "",
                 f"**Stack:** `{stack.summary}`\n\nPreparando `{choice.hf_id}` "
-                f"(rango {wmin}–{wmax} palabras)…",
+                f"(rango {wmin}–{wmax} palabras{refs_status})…",
                 plan,
             )
 
@@ -446,6 +497,7 @@ def on_ui_tabs():
                     language=language,
                     word_min=wmin,
                     word_max=wmax,
+                    ref_slots=refs,
                 ),
                 vl_value=choice.value,
                 progress=on_prog_cap,
@@ -474,6 +526,9 @@ def on_ui_tabs():
             base_prompt: str,
             det_raw: str,
             overlap_discard: float,
+            ref1=None,
+            ref2=None,
+            ref3=None,
             progress=gr.Progress(track_tqdm=True),
         ):
             stack = _current_stack()
@@ -485,6 +540,9 @@ def on_ui_tabs():
                 det_raw, bounds=DETAIL_WORDS_BOUNDS, default=DETAIL_WORDS_DEFAULT
             )
             overlap_max = clamp_overlap_discard(overlap_discard)
+            refs = normalize_ref_slots(ref1, ref2, ref3)
+            n_refs = sum(1 for r in refs if r is not None)
+            refs_status = f", {n_refs} ref(s)" if n_refs else ""
 
             if not base:
                 yield (
@@ -526,13 +584,14 @@ def on_ui_tabs():
             preview_ui = preview if preview is not None else crop
             log(
                 f"detalle: VL bbox {crop.size[0]}×{crop.size[1]} "
-                f"(máscara gris; rango {wmin}–{wmax} palabras)"
+                f"(máscara gris; rango {wmin}–{wmax} palabras; refs={n_refs})"
             )
             yield (
                 base,
                 "",
                 f"**Stack:** `{stack.summary}`\n\nPreparando detalle `{choice.hf_id}` "
-                f"(crop {crop.size[0]}×{crop.size[1]}, {wmin}–{wmax} palabras)…",
+                f"(crop {crop.size[0]}×{crop.size[1]}, {wmin}–{wmax} palabras"
+                f"{refs_status})…",
                 plan,
                 preview_ui,
                 "",
@@ -594,6 +653,7 @@ def on_ui_tabs():
                     word_min=wmin,
                     word_max=wmax,
                     overlap_discard=overlap_max,
+                    ref_slots=refs,
                 ),
                 vl_value=choice.value,
                 progress=on_prog,
@@ -641,30 +701,50 @@ def on_ui_tabs():
         # Forge Neo = Gradio 4.x → parámetro `js` (no `_js`).
         # El preprocesador fuerza el valor del dual-range al payload del click.
         _JS_SYNC_GEN = """
-(img, notes, vl, lang, gen_raw) => {
+(img, notes, vl, lang, gen_raw, r1, r2, r3) => {
   if (window.img2promptSyncRanges) window.img2promptSyncRanges();
   const root = document.getElementById("img2prompt_gen_range");
   const el = root && root.querySelector("textarea, input");
-  return [img, notes, vl, lang, el ? el.value : gen_raw];
+  return [img, notes, vl, lang, el ? el.value : gen_raw, r1, r2, r3];
 }
 """.strip()
         _JS_SYNC_DET = """
-(img, zone_notes, vl, lang, prompt, det_raw, overlap) => {
+(img, zone_notes, vl, lang, prompt, det_raw, overlap, r1, r2, r3) => {
   if (window.img2promptSyncRanges) window.img2promptSyncRanges();
   const root = document.getElementById("img2prompt_det_range");
   const el = root && root.querySelector("textarea, input");
-  return [img, zone_notes, vl, lang, prompt, el ? el.value : det_raw, overlap];
+  return [img, zone_notes, vl, lang, prompt, el ? el.value : det_raw, overlap, r1, r2, r3];
 }
 """.strip()
         generate_btn.click(
             fn=_generate_with_plan,
-            inputs=[image, notes, vl_dd, lang_dd, gen_range],
+            inputs=[
+                image,
+                notes,
+                vl_dd,
+                lang_dd,
+                gen_range,
+                gen_ref1,
+                gen_ref2,
+                gen_ref3,
+            ],
             outputs=[prompt_out, hints_out, status_out, download_plan],
             js=_JS_SYNC_GEN,
         )
         detail_btn.click(
             fn=_detail_with_plan,
-            inputs=[image, zone_notes, vl_dd, lang_dd, prompt_out, det_range, det_overlap],
+            inputs=[
+                image,
+                zone_notes,
+                vl_dd,
+                lang_dd,
+                prompt_out,
+                det_range,
+                det_overlap,
+                zone_ref1,
+                zone_ref2,
+                zone_ref3,
+            ],
             outputs=[prompt_out, hints_out, status_out, download_plan, crop_preview, zone_prompt],
             js=_JS_SYNC_DET,
         )

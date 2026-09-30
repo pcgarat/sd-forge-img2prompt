@@ -40,28 +40,39 @@ def chat_with_image(
     *,
     system: str,
     user_text: str,
-    image: Image.Image,
+    image: Image.Image | list[Image.Image] | None = None,
     num_predict: int = 320,
 ) -> str:
     """
-    POST {base}/api/chat con system + user(text) + images:[b64].
+    POST {base}/api/chat con system + user(text) + images opcionales.
 
-    Misma API nativa que chatBot; añade visión vía ``images``.
+    ``image`` puede ser None (solo texto / notas→prompt), una PIL o una lista
+    (primaria + refs foto 1…N).
     """
+    if image is None:
+        images: list[Image.Image] = []
+    elif isinstance(image, list):
+        images = image
+    else:
+        images = [image]
+    b64_list = [image_to_b64(im) for im in images if im is not None]
+
     messages: list[dict[str, Any]] = []
     if (system or "").strip():
         messages.append({"role": "system", "content": system.strip()})
-    messages.append(
-        {
-            "role": "user",
-            "content": (user_text or "").strip(),
-            "images": [image_to_b64(image)],
-        }
-    )
+    user_msg: dict[str, Any] = {
+        "role": "user",
+        "content": (user_text or "").strip(),
+    }
+    if b64_list:
+        user_msg["images"] = b64_list
+    messages.append(user_msg)
     payload: dict[str, Any] = {
         "model": cfg.model,
         "messages": messages,
         "stream": False,
+        # 0 = descargar el modelo de VRAM al terminar (Forge y Ollama comparten GPU).
+        "keep_alive": 0,
         "options": {"num_predict": int(num_predict), "temperature": 0.2},
     }
     body = json.dumps(payload).encode("utf-8")
@@ -69,7 +80,10 @@ def chat_with_image(
     if cfg.api_key:
         headers["Authorization"] = f"Bearer {cfg.api_key}"
 
-    log(f"Ollama POST {cfg.chat_url} · model={cfg.model} · num_predict={num_predict}")
+    log(
+        f"Ollama POST {cfg.chat_url} · model={cfg.model} · "
+        f"num_predict={num_predict} · images={len(b64_list)}"
+    )
     req = urllib.request.Request(cfg.chat_url, data=body, headers=headers, method="POST")
     try:
         with urllib.request.urlopen(req, timeout=cfg.timeout) as resp:

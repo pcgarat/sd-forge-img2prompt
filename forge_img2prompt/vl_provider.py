@@ -14,12 +14,14 @@ from forge_img2prompt.provider import (
     GEN_WORDS_BOUNDS,
     GEN_WORDS_DEFAULT,
     LANG_ES,
+    REF_IMAGES_MAX,
     DetailRequest,
     PromptRequest,
     PromptResult,
     StubProvider,
     _negative_hint,
     _sampler_hints,
+    active_ref_pairs,
     append_detail,
     clamp_overlap_discard,
     clamp_text_to_words,
@@ -31,6 +33,8 @@ from forge_img2prompt.provider import (
     max_tokens_for_words,
     normalize_language,
     normalize_zone_anchor,
+    ref_images_instruction,
+    ref_label,
     scene_context_snippet,
     shared_content_count,
 )
@@ -41,9 +45,29 @@ ProgressCb = Callable[[float, str], None]
 
 _CAPTION_SYSTEM = (
     "You write image prompts for FLUX / Krea 2 / FLUX.2 Klein style generators. "
-    "Reply with natural-language visual prose only — no bullet lists, "
-    "no booru tags, no preamble. Order: subject, action/pose, environment, composition, "
-    "lighting, materials/atmosphere. Put any readable on-image text in \"quotes\". "
+    "Reply in natural language only — no bullet lists, no booru tags, no preamble. "
+    "Be concrete, precise, and concise: state only observable facts that add information; "
+    "omit filler, mood adjectives, and decorative flourishes that do not change the scene. "
+    "Order: subject, action/pose, environment, composition, lighting, materials. "
+    "Never use negative phrasing (forbidden: 'there is no…', 'no hay…', 'without any…', "
+    "'absence of…', listing what is missing). Describe only what is present. "
+    "Mention readable on-image text in \"quotes\" only if such text is actually visible; "
+    "if the main image has no text, do not mention text, captions, signs, or quotes at all. "
+    "Do not choose your own length; obey only the word-count range in the user message."
+)
+
+_NOTES_SYSTEM = (
+    "You write image-generation prompts for FLUX / Krea 2 / FLUX.2 Klein. "
+    "There is no main photograph: the user supplies a brief in notes. "
+    "Turn that brief into a ready-to-paste prompt in natural language. "
+    "Enrich it with concrete visual details (subject, pose/action, environment, "
+    "composition, lighting, materials) that fit the brief; do not contradict or "
+    "replace the user's intent. "
+    "Be concrete, precise, and concise; no decorative filler. "
+    "Never use negative phrasing (forbidden: 'there is no…', 'no hay…', 'without…'). "
+    "Mention text in \"quotes\" only if the brief asks for readable on-image text; "
+    "otherwise do not mention text at all. "
+    "No bullet lists, no booru tags, no preamble. "
     "Do not choose your own length; obey only the word-count range in the user message."
 )
 
@@ -67,7 +91,12 @@ _DETAIL_SYSTEM = (
     "Describe ONLY the real photograph content that is NOT gray. "
     "Start from the subject anchor and add concrete local traits "
     "(face, hair, skin, fabric, marks, jewelry). "
-    "Natural-language prose only — never comma-separated tags. "
+    "Natural language only — never comma-separated tags. "
+    "Be concrete, precise, and concise; no decorative filler. "
+    "Never use negative phrasing (forbidden: 'there is no…', 'no hay…', "
+    "'without…', listing absences). Describe only what is visible. "
+    "Mention text in \"quotes\" only if readable text is visible in the non-gray area; "
+    "otherwise do not mention text at all. "
     "FORBIDDEN: other people, the rest of the photo, furniture, walls, tables, "
     "rooms, lighting essays, atmosphere, camera style, keyword lists, or "
     "retelling any scene context you were given. "
@@ -80,9 +109,13 @@ def _language_instruction(language: str) -> str:
     if normalize_language(language) == LANG_ES:
         return (
             "Write the entire prompt in Spanish (Castilian). "
-            "Do not mix English except for unavoidable brand names or on-image text in quotes."
+            "Do not mix English except for unavoidable brand names "
+            "or on-image text that is actually visible (then use «quotes»)."
         )
-    return "Write the entire prompt in English."
+    return (
+        "Write the entire prompt in English. "
+        "Quote on-image text only when it is actually visible."
+    )
 
 
 def _word_range_instruction(word_min: int, word_max: int) -> str:
@@ -105,8 +138,8 @@ def _family_hint(family: str) -> str:
             "lighting direction and materials."
         )
     return (
-        "Target Krea 2 / Qwen3-VL prose: emphasize composition, lighting, materials "
-        "and atmosphere."
+        "Target Krea 2: emphasize composition, lighting and materials "
+        "with concrete, information-dense language."
     )
 
 
@@ -117,16 +150,67 @@ def _build_user_text(
     *,
     word_min: int = GEN_WORDS_DEFAULT[0],
     word_max: int = GEN_WORDS_DEFAULT[1],
+    ref_count: int = 0,
+    ref_indices: list[int] | tuple[int, ...] | None = None,
 ) -> str:
     parts = [
-        "Describe this image as a ready-to-paste generation prompt.",
+        "Describe this image as a ready-to-paste generation prompt in natural language.",
+        "Be concrete, precise, and concise; no ornamental wording.",
+        "Never say what is absent (no 'there is no…' / 'no hay…').",
+        "If the main image has no readable text, do not mention text at all.",
         _family_hint(family),
         _language_instruction(language),
         _word_range_instruction(word_min, word_max),
     ]
+    ref_block = ref_images_instruction(
+        ref_count, for_detail=False, indices=ref_indices
+    )
+    if ref_block:
+        parts.append(ref_block)
     notes = (notes or "").strip()
     if notes:
         parts.append(f"User notes to respect or weave in: {notes}")
+    return " ".join(parts)
+
+
+def _build_notes_only_user_text(
+    notes: str,
+    family: str,
+    language: str = LANG_ES,
+    *,
+    word_min: int = GEN_WORDS_DEFAULT[0],
+    word_max: int = GEN_WORDS_DEFAULT[1],
+    ref_indices: list[int] | tuple[int, ...] | None = None,
+) -> str:
+    """User message when Generate runs without a main image (brief → prompt)."""
+    parts = [
+        "No main photograph was provided.",
+        "Write a ready-to-paste generation prompt from the user brief.",
+        "Add concrete visual detail that enriches the brief; stay faithful to it.",
+        "Be concrete, precise, and concise; no ornamental wording.",
+        "Never say what is absent (no 'there is no…' / 'no hay…').",
+        "Mention text only if the brief requests readable on-image text.",
+        _family_hint(family),
+        _language_instruction(language),
+        _word_range_instruction(word_min, word_max),
+    ]
+    ref_block = ref_images_instruction(
+        0, for_detail=False, indices=ref_indices
+    )
+    if ref_block:
+        parts.append(
+            "Reference images may be attached (no primary scene photo). "
+            + ref_block.replace(
+                "first = main scene to caption (primary); then reference(s)",
+                "attached reference(s)",
+                1,
+            )
+        )
+    brief = (notes or "").strip()
+    if brief:
+        parts.append(f"User brief: {brief}")
+    else:
+        parts.append("User brief: (empty — invent nothing; ask would be empty).")
     return " ".join(parts)
 
 
@@ -153,12 +237,17 @@ def _build_detail_user_text(
     anchor: str = "",
     word_min: int = DETAIL_WORDS_DEFAULT[0],
     word_max: int = DETAIL_WORDS_DEFAULT[1],
+    ref_count: int = 0,
+    ref_indices: list[int] | tuple[int, ...] | None = None,
 ) -> str:
     # Never paste the full global prompt: VL models echo / paraphrase it.
     # Anchor comes from a prior identify step (e.g. "el hombre de la izquierda").
     parts = [
         "Image: masked close-up. Flat gray = out of scope; ignore it.",
-        "Describe the non-gray subject only in connected prose.",
+        "Describe the non-gray subject only in natural language.",
+        "Be concrete, precise, and concise; no ornamental wording.",
+        "Never say what is absent (no 'there is no…' / 'no hay…').",
+        "If there is no readable text in the non-gray area, do not mention text.",
         "Do NOT invent a second person, table, wall, or the rest of the photo.",
         "Do NOT output comma-separated tags (bad: 'beard, gray hair, wrinkles').",
         "Do NOT describe global lighting, mood, camera, or the full scene.",
@@ -166,6 +255,11 @@ def _build_detail_user_text(
         _word_range_instruction(word_min, word_max),
         f"Hard limit: at most {word_max} words.",
     ]
+    ref_block = ref_images_instruction(
+        ref_count, for_detail=True, indices=ref_indices
+    )
+    if ref_block:
+        parts.append(ref_block)
     anchor = (anchor or "").strip()
     if anchor:
         parts.insert(
@@ -182,6 +276,73 @@ def _build_detail_user_text(
     return " ".join(parts)
 
 
+def _pack_primary_and_refs(
+    primary: Image.Image,
+    ref_slots: tuple[Image.Image | None, ...] | list[Image.Image | None] | None = None,
+    *,
+    # Back-compat: bare list of images (dense foto 1..N)
+    ref_images: tuple[Image.Image, ...] | list[Image.Image] | None = None,
+) -> tuple[list[Image.Image], list[int]]:
+    """Return (images=[primary, …refs], slot_indices for each ref)."""
+    if ref_slots is not None:
+        pairs = active_ref_pairs(ref_slots)
+    elif ref_images:
+        pairs = [(i, img) for i, img in enumerate(list(ref_images)[:REF_IMAGES_MAX], start=1)]
+    else:
+        pairs = []
+    images = [primary, *[img for _, img in pairs]]
+    indices = [idx for idx, _ in pairs]
+    return images, indices
+
+
+def _pack_refs_only(
+    ref_slots: tuple[Image.Image | None, ...] | list[Image.Image | None] | None = None,
+    *,
+    ref_images: tuple[Image.Image, ...] | list[Image.Image] | None = None,
+) -> tuple[list[Image.Image], list[int]]:
+    """Images + slot indices when there is no primary/main photo."""
+    if ref_slots is not None:
+        pairs = active_ref_pairs(ref_slots)
+    elif ref_images:
+        pairs = [
+            (i, img)
+            for i, img in enumerate(list(ref_images)[:REF_IMAGES_MAX], start=1)
+        ]
+    else:
+        pairs = []
+    return [img for _, img in pairs], [idx for idx, _ in pairs]
+
+
+def _vl_user_content(
+    images: list[Image.Image],
+    user_text: str,
+    *,
+    ref_indices: list[int] | tuple[int, ...] | None = None,
+    primary_label: str = "Primary image.",
+    has_primary: bool = True,
+) -> list[dict[str, Any]]:
+    """Interleave images + labels for Qwen-style chat templates."""
+    content: list[dict[str, Any]] = []
+    for i, img in enumerate(images):
+        if img.mode != "RGB":
+            img = img.convert("RGB")
+        content.append({"type": "image", "image": img})
+        if has_primary and i == 0:
+            content.append({"type": "text", "text": primary_label})
+        else:
+            # With primary: refs start at content index 1 → ref_indices[0]
+            # Without primary: every image is a labeled ref
+            ref_i = i - 1 if has_primary else i
+            slot = (
+                ref_indices[ref_i]
+                if ref_indices is not None and 0 <= ref_i < len(ref_indices)
+                else (i if has_primary else i + 1)
+            )
+            content.append({"type": "text", "text": ref_label(slot)})
+    content.append({"type": "text", "text": user_text})
+    return content
+
+
 def _free_forge_vram() -> str:
     log("liberando VRAM de Forge…")
     notes: list[str] = []
@@ -196,15 +357,72 @@ def _free_forge_vram() -> str:
             notes.append("soft_empty_cache")
     except Exception as exc:  # noqa: BLE001
         notes.append(f"forge-vram-skip:{type(exc).__name__}")
-    gc.collect()
-    if torch.cuda.is_available():
-        try:
-            torch.cuda.empty_cache()
-        except Exception:
-            pass
+    notes.append(_release_cuda())
     result = "+".join(notes) if notes else "gc"
     log(f"VRAM liberada · {result}")
     return result
+
+
+def _release_cuda() -> str:
+    """GC + empty_cache (+ ipc_collect). Devuelve etiqueta corta para logs."""
+    gc.collect()
+    gc.collect()
+    if not torch.cuda.is_available():
+        return "gc"
+    try:
+        torch.cuda.synchronize()
+    except Exception:
+        pass
+    try:
+        torch.cuda.empty_cache()
+    except Exception:
+        pass
+    try:
+        torch.cuda.ipc_collect()
+    except Exception:
+        pass
+    try:
+        free_b, total_b = torch.cuda.mem_get_info()
+        free_gb = free_b / (1024**3)
+        total_gb = total_b / (1024**3)
+        log(f"CUDA libre ≈ {free_gb:.2f}/{total_gb:.2f} GB")
+        return f"cuda_free≈{free_gb:.1f}G"
+    except Exception:
+        return "cuda_empty"
+
+
+def _move_model_to_cpu(model: Any) -> None:
+    """Best-effort: sacamos pesos de GPU aunque venga con device_map=auto."""
+    if model is None:
+        return
+    try:
+        if hasattr(model, "hf_device_map"):
+            try:
+                model.hf_device_map.clear()
+            except Exception:
+                pass
+    except Exception:
+        pass
+    try:
+        model.to("cpu")
+        return
+    except Exception:
+        pass
+    try:
+        model.cpu()
+        return
+    except Exception:
+        pass
+    # Último recurso: mover parámetro a parámetro
+    try:
+        for p in model.parameters():
+            if p.is_cuda:
+                p.data = p.data.to("cpu")
+        for b in model.buffers():
+            if b.is_cuda:
+                b.data = b.data.to("cpu")
+    except Exception:
+        pass
 
 
 def _device_dtype() -> tuple[str, torch.dtype]:
@@ -222,17 +440,27 @@ class QwenVLProvider:
         self._loaded_from: str | None = None
 
     def unload(self) -> None:
-        if self._model is not None or self._processor is not None:
-            log(f"descargando modelo VL ({self._loaded_from or '?'})")
+        model = self._model
+        processor = self._processor
+        path = self._loaded_from
         self._model = None
         self._processor = None
         self._loaded_from = None
-        gc.collect()
-        if torch.cuda.is_available():
+        if model is not None or processor is not None:
+            log(f"descargando modelo VL ({path or '?'})")
+        if model is not None:
+            _move_model_to_cpu(model)
             try:
-                torch.cuda.empty_cache()
+                del model
             except Exception:
                 pass
+        if processor is not None:
+            try:
+                del processor
+            except Exception:
+                pass
+        note = _release_cuda()
+        log(f"VL unload hecho · {note}")
 
     def _ensure_loaded(self, model_path: str) -> None:
         if self._model is not None and self._loaded_from == model_path:
@@ -247,13 +475,15 @@ class QwenVLProvider:
 
         try:
             self._processor = AutoProcessor.from_pretrained(model_path, trust_remote_code=True)
+            # max_memory fuerza a caber; sin device_map el unload a CPU es más fiable.
+            # Preferimos .to(cuda) explícito en GPU única.
             self._model = AutoModelForImageTextToText.from_pretrained(
                 model_path,
                 torch_dtype=dtype,
-                device_map="auto" if device == "cuda" else None,
+                low_cpu_mem_usage=True,
                 trust_remote_code=True,
             )
-            if device == "cpu":
+            if device == "cuda":
                 self._model = self._model.to(device)
             log(f"modelo VL cargado en {device}")
         except Exception as gpu_exc:  # noqa: BLE001
@@ -262,6 +492,7 @@ class QwenVLProvider:
             self._model = AutoModelForImageTextToText.from_pretrained(
                 model_path,
                 torch_dtype=torch.float32,
+                low_cpu_mem_usage=True,
                 trust_remote_code=True,
             ).to("cpu")
             log("modelo VL cargado en CPU")
@@ -270,15 +501,24 @@ class QwenVLProvider:
 
     def _run_vl(
         self,
-        image: Image.Image,
+        image: Image.Image | list[Image.Image] | None,
         system: str,
         user_text: str,
         *,
         max_new_tokens: int = 320,
+        ref_indices: list[int] | tuple[int, ...] | None = None,
+        has_primary: bool = True,
     ) -> str:
         assert self._model is not None and self._processor is not None
-        if image.mode != "RGB":
-            image = image.convert("RGB")
+        if image is None:
+            images: list[Image.Image] = []
+        elif isinstance(image, list):
+            images = list(image)
+        else:
+            images = [image]
+        images = [
+            (im.convert("RGB") if im.mode != "RGB" else im) for im in images if im is not None
+        ]
 
         messages = [
             {
@@ -287,10 +527,12 @@ class QwenVLProvider:
             },
             {
                 "role": "user",
-                "content": [
-                    {"type": "image", "image": image},
-                    {"type": "text", "text": user_text},
-                ],
+                "content": _vl_user_content(
+                    images,
+                    user_text,
+                    ref_indices=ref_indices,
+                    has_primary=has_primary and bool(images),
+                ),
             },
         ]
         inputs = self._processor.apply_chat_template(
@@ -306,20 +548,37 @@ class QwenVLProvider:
             model_device = torch.device("cpu")
         inputs = {k: v.to(model_device) if hasattr(v, "to") else v for k, v in inputs.items()}
 
-        log(f"generando caption (max_new_tokens={max_new_tokens}) en {model_device}…")
-        with torch.inference_mode():
-            generated = self._model.generate(
-                **inputs, max_new_tokens=max_new_tokens, do_sample=False
-            )
+        log(
+            f"generando caption (max_new_tokens={max_new_tokens}, "
+            f"images={len(images)}) en {model_device}…"
+        )
+        generated = None
+        try:
+            with torch.inference_mode():
+                generated = self._model.generate(
+                    **inputs, max_new_tokens=max_new_tokens, do_sample=False
+                )
 
-        in_ids = inputs["input_ids"]
-        trimmed = [out[len(inp) :] for inp, out in zip(in_ids, generated)]
-        text = self._processor.batch_decode(
-            trimmed, skip_special_tokens=True, clean_up_tokenization_spaces=False
-        )[0]
-        caption = " ".join(text.split()).strip()
-        log(f"caption listo · {len(caption)} chars")
-        return caption
+            in_ids = inputs["input_ids"]
+            trimmed = [out[len(inp) :] for inp, out in zip(in_ids, generated)]
+            text = self._processor.batch_decode(
+                trimmed, skip_special_tokens=True, clean_up_tokenization_spaces=False
+            )[0]
+            caption = " ".join(text.split()).strip()
+            log(f"caption listo · {len(caption)} chars")
+            return caption
+        finally:
+            # Los tensores de generate/inputs se quedan en VRAM si no se borran.
+            try:
+                del inputs
+            except Exception:
+                pass
+            if generated is not None:
+                try:
+                    del generated
+                except Exception:
+                    pass
+            _release_cuda()
 
     def _caption(
         self,
@@ -331,10 +590,15 @@ class QwenVLProvider:
         uncensored: bool = False,
         word_min: int = GEN_WORDS_DEFAULT[0],
         word_max: int = GEN_WORDS_DEFAULT[1],
+        ref_slots: tuple[Image.Image | None, ...] | list[Image.Image | None] | None = None,
+        ref_images: tuple[Image.Image, ...] | list[Image.Image] | None = None,
     ) -> str:
         lang = normalize_language(language)
         wmin, wmax = clamp_word_range(
             word_min, word_max, bounds=GEN_WORDS_BOUNDS, default=GEN_WORDS_DEFAULT
+        )
+        packed, indices = _pack_primary_and_refs(
+            image, ref_slots=ref_slots, ref_images=ref_images
         )
         system = (
             f"{_CAPTION_SYSTEM} {_language_instruction(lang)} "
@@ -343,10 +607,58 @@ class QwenVLProvider:
         if uncensored:
             system = f"{system} {_CAPTION_UNCENSORED_EXTRA}"
         return self._run_vl(
-            image,
+            packed,
             system,
-            _build_user_text(notes, family, lang, word_min=wmin, word_max=wmax),
+            _build_user_text(
+                notes,
+                family,
+                lang,
+                word_min=wmin,
+                word_max=wmax,
+                ref_count=len(indices),
+                ref_indices=indices,
+            ),
             max_new_tokens=max_tokens_for_words(wmax, floor=64),
+            ref_indices=indices,
+            has_primary=True,
+        )
+
+    def _from_notes(
+        self,
+        notes: str,
+        family: str,
+        *,
+        language: str = LANG_ES,
+        uncensored: bool = False,
+        word_min: int = GEN_WORDS_DEFAULT[0],
+        word_max: int = GEN_WORDS_DEFAULT[1],
+        ref_slots: tuple[Image.Image | None, ...] | list[Image.Image | None] | None = None,
+    ) -> str:
+        lang = normalize_language(language)
+        wmin, wmax = clamp_word_range(
+            word_min, word_max, bounds=GEN_WORDS_BOUNDS, default=GEN_WORDS_DEFAULT
+        )
+        packed, indices = _pack_refs_only(ref_slots=ref_slots)
+        system = (
+            f"{_NOTES_SYSTEM} {_language_instruction(lang)} "
+            f"{_word_range_instruction(wmin, wmax)}"
+        )
+        if uncensored:
+            system = f"{system} {_CAPTION_UNCENSORED_EXTRA}"
+        return self._run_vl(
+            packed or None,
+            system,
+            _build_notes_only_user_text(
+                notes,
+                family,
+                lang,
+                word_min=wmin,
+                word_max=wmax,
+                ref_indices=indices,
+            ),
+            max_new_tokens=max_tokens_for_words(wmax, floor=64),
+            ref_indices=indices,
+            has_primary=False,
         )
 
     def _identify_zone(
@@ -379,6 +691,8 @@ class QwenVLProvider:
         anchor: str = "",
         word_min: int = DETAIL_WORDS_DEFAULT[0],
         word_max: int = DETAIL_WORDS_DEFAULT[1],
+        ref_slots: tuple[Image.Image | None, ...] | list[Image.Image | None] | None = None,
+        ref_images: tuple[Image.Image, ...] | list[Image.Image] | None = None,
     ) -> str:
         lang = normalize_language(language)
         wmin, wmax = clamp_word_range(
@@ -387,6 +701,9 @@ class QwenVLProvider:
             bounds=DETAIL_WORDS_BOUNDS,
             default=DETAIL_WORDS_DEFAULT,
         )
+        packed, indices = _pack_primary_and_refs(
+            crop, ref_slots=ref_slots, ref_images=ref_images
+        )
         system = (
             f"{_DETAIL_SYSTEM} {_language_instruction(lang)} "
             f"{_word_range_instruction(wmin, wmax)} Hard limit: ≤{wmax} words."
@@ -394,12 +711,19 @@ class QwenVLProvider:
         if uncensored:
             system = f"{system} {_CAPTION_UNCENSORED_EXTRA}"
         raw = self._run_vl(
-            crop,
+            packed,
             system,
             _build_detail_user_text(
-                notes, lang, anchor=anchor, word_min=wmin, word_max=wmax
+                notes,
+                lang,
+                anchor=anchor,
+                word_min=wmin,
+                word_max=wmax,
+                ref_count=len(indices),
+                ref_indices=indices,
             ),
             max_new_tokens=max_tokens_for_words(wmax, floor=24),
+            ref_indices=indices,
         )
         return clamp_text_to_words(raw, wmax)
 
@@ -426,12 +750,17 @@ class QwenVLProvider:
                 status=f"Stack no reconocido. Detectado: {stack.summary}.",
             )
         if request.image is None:
-            return PromptResult(
-                prompt="",
-                negative_hint="",
-                sampler_hints=hints,
-                status="VL necesita una imagen. Súbela/pégala, o usa solo Notas (stub).",
-            )
+            notes = (request.user_notes or "").strip()
+            if not notes:
+                return PromptResult(
+                    prompt="",
+                    negative_hint="",
+                    sampler_hints=hints,
+                    status=(
+                        "Sin imagen principal: escribe en **Notas** qué quieres "
+                        "generar y pulsa Generate (el modelo ampliará el brief)."
+                    ),
+                )
 
         local = Path(choice.local_path) if choice.local_path else default_local_dir()
         wmin, wmax = clamp_word_range(
@@ -441,6 +770,7 @@ class QwenVLProvider:
             default=GEN_WORDS_DEFAULT,
         )
         prompt = ""
+        notes_only = request.image is None
         try:
             if not is_local_ready(local):
                 report(0.0, "Preparando descarga del modelo VL…")
@@ -456,16 +786,29 @@ class QwenVLProvider:
                 log(f"aviso: {choice.hf_id} puede OOM en 8 GB VRAM")
             report(0.65, "Cargando modelo en GPU/CPU…")
             self._ensure_loaded(str(local))
-            report(0.8, "Generando caption…")
-            prompt = self._caption(
-                request.image,
-                request.user_notes,
-                stack.family,
-                language=request.language,
-                uncensored=choice.is_uncensored,
-                word_min=wmin,
-                word_max=wmax,
-            )
+            if notes_only:
+                report(0.8, "Expandiendo notas a prompt…")
+                prompt = self._from_notes(
+                    request.user_notes,
+                    stack.family,
+                    language=request.language,
+                    uncensored=choice.is_uncensored,
+                    word_min=wmin,
+                    word_max=wmax,
+                    ref_slots=request.ref_slots,
+                )
+            else:
+                report(0.8, "Generando caption…")
+                prompt = self._caption(
+                    request.image,
+                    request.user_notes,
+                    stack.family,
+                    language=request.language,
+                    uncensored=choice.is_uncensored,
+                    word_min=wmin,
+                    word_max=wmax,
+                    ref_slots=request.ref_slots,
+                )
             report(1.0, "Caption listo")
         except Exception as exc:  # noqa: BLE001
             log(f"ERROR VL: {exc}")
@@ -501,15 +844,16 @@ class QwenVLProvider:
         label = "Krea 2" if stack.family == "krea2" else "Klein 9B"
         lang = normalize_language(request.language)
         lang_label = "español" if lang == LANG_ES else "English"
+        mode = "notas→prompt" if notes_only else "imagen→prompt"
         return PromptResult(
             prompt=prompt,
             negative_hint=_negative_hint(stack.family, stack.variant),
             sampler_hints=hints,
             status=(
                 f"VL {label} ({stack.variant}) · `{choice.hf_id}` "
-                f"desde `{local.name}` · idioma={lang_label} · "
+                f"desde `{local.name}` · {mode} · idioma={lang_label} · "
                 f"{n_words} palabras (rango {wmin}–{wmax}){range_note}. "
-                "Checkpoint Forge liberado durante el caption."
+                "VL descargado de VRAM; Forge puede recargar el checkpoint."
             ),
         )
 
@@ -594,6 +938,7 @@ class QwenVLProvider:
                 anchor=anchor,
                 word_min=wmin,
                 word_max=wmax,
+                ref_slots=request.ref_slots,
             )
             report(1.0, "Detalle listo")
         except Exception as exc:  # noqa: BLE001
@@ -626,7 +971,7 @@ class QwenVLProvider:
                 negative_hint="",
                 sampler_hints=hints,
                 status=(
-                    f"VL `{choice.hf_id}` devolvió una lista de tags en lugar de prosa "
+                    f"VL `{choice.hf_id}` devolvió una lista de tags en lugar de lenguaje natural "
                     "contextual; no se añadió. Reintenta, añade notas, o pon el umbral "
                     "de descarte a 0."
                 ),
@@ -699,7 +1044,7 @@ class QwenVLProvider:
 
 
 class CompositeProvider:
-    """VL si hay imagen; si no, stub por notas. Enruta Ollama vs Transformers."""
+    """Caption VL/Ollama (imagen o notas); stub solo si no hay nada que enviar."""
 
     def __init__(self) -> None:
         self.stub = StubProvider()
@@ -715,7 +1060,10 @@ class CompositeProvider:
         *,
         progress: ProgressCb | None = None,
     ) -> PromptResult:
-        if request.image is not None:
+        notes = (request.user_notes or "").strip()
+        has_refs = bool(active_ref_pairs(request.ref_slots))
+        # Sin imagen: el modelo expande Notas (refs opcionales). Stub solo si vacío.
+        if request.image is not None or notes or has_refs:
             choice = choice_by_value(vl_value) if vl_value else choice_by_value("")
             assert choice is not None
             if choice.is_ollama:

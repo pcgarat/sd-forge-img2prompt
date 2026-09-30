@@ -1,3 +1,8 @@
+from __future__ import annotations
+
+import json
+from unittest.mock import patch
+
 from forge_img2prompt.provider import LANG_EN, LANG_ES
 from forge_img2prompt.vl_provider import (
     _build_detail_user_text,
@@ -76,12 +81,17 @@ def test_word_range_instruction_exact():
     assert "UI sliders" in _word_range_instruction(40, 80)
 
 
-def test_caption_system_has_no_fixed_length():
+def test_caption_system_style_rules():
     from forge_img2prompt.vl_provider import _CAPTION_SYSTEM
 
     low = _CAPTION_SYSTEM.lower()
     assert "one paragraph" not in low
     assert "word-count" in low or "word count" in low.replace("-", " ")
+    assert "natural language" in low
+    assert "prose" not in low
+    assert "no hay" in low or "there is no" in low
+    assert "concrete" in low and "concise" in low
+    assert "only if" in low or "actually visible" in low
 
 
 def test_family_hint_has_no_length():
@@ -94,4 +104,60 @@ def test_family_hint_has_no_length():
         assert "short" not in low
         assert "long" not in low
         assert "length" not in low
+        assert "prose" not in low
 
+
+def test_notes_only_user_text_expands_brief():
+    from forge_img2prompt.vl_provider import _NOTES_SYSTEM, _build_notes_only_user_text
+
+    text = _build_notes_only_user_text(
+        "un gato naranja en un tejado",
+        "krea2",
+        LANG_ES,
+        word_min=40,
+        word_max=80,
+    )
+    low = text.lower()
+    assert "no main photograph" in low
+    assert "gato naranja" in low
+    assert "user brief" in low
+    assert "40" in text and "80" in text
+    assert "natural language" in _NOTES_SYSTEM.lower()
+    assert "prose" not in _NOTES_SYSTEM.lower()
+
+
+def test_chat_text_only_omits_images(monkeypatch):
+    from forge_img2prompt.ollama_client import chat_with_image
+    from forge_img2prompt.ollama_settings import OllamaConfig
+
+    cfg = OllamaConfig(
+        base_url="http://127.0.0.1:11434",
+        model="qwen3-vl:8b-instruct",
+        api_key="",
+        timeout=30,
+    )
+    captured: dict = {}
+
+    class _Resp:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def read(self):
+            return json.dumps(
+                {"message": {"role": "assistant", "content": "A cat on a roof."}}
+            ).encode()
+
+    def fake_urlopen(req, timeout=None):
+        captured["body"] = json.loads(req.data.decode())
+        return _Resp()
+
+    with patch("forge_img2prompt.ollama_client.urllib.request.urlopen", fake_urlopen):
+        text = chat_with_image(
+            cfg, system="sys", user_text="brief", image=None, num_predict=32
+        )
+    assert text == "A cat on a roof."
+    assert "images" not in captured["body"]["messages"][-1]
+    assert captured["body"].get("keep_alive") == 0

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Protocol
+from typing import Any, Protocol
 
 from PIL import Image
 
@@ -9,6 +9,7 @@ from forge_img2prompt.log import log
 from forge_img2prompt.stack import StackInfo
 
 _TAG_SOUP_HINTS = (", masterpiece", "1girl,", "best quality,", "ultra detailed,")
+REF_IMAGES_MAX = 3
 
 
 # Valores canónicos del selector de idioma (UI y providers).
@@ -93,6 +94,121 @@ def clamp_overlap_discard(value: int | float | None) -> int:
     return max(floor, min(ceil, n))
 
 
+def normalize_ref_images(
+    *slots: Any,
+    max_count: int = REF_IMAGES_MAX,
+) -> tuple[Image.Image, ...]:
+    """
+    Coerce Gradio Image slots into up to ``max_count`` RGB PIL images.
+
+    Slot positions are preserved for labeling: empty slots stay empty so that
+    UI «Foto 2» is always ``foto 2`` even if Foto 1 is unused. Returns only
+    the non-empty images **in slot order** for the multimodal payload; use
+    ``normalize_ref_slots`` when you need fixed indices.
+    """
+    fixed = normalize_ref_slots(*slots, max_count=max_count)
+    return tuple(img for img in fixed if img is not None)
+
+
+def normalize_ref_slots(
+    *slots: Any,
+    max_count: int = REF_IMAGES_MAX,
+) -> tuple[Image.Image | None, ...]:
+    """Fixed-length tuple (len=max_count); ``None`` = empty UI slot."""
+    padded: list[Any] = list(slots[:max_count])
+    while len(padded) < max_count:
+        padded.append(None)
+    out: list[Image.Image | None] = []
+    for raw in padded:
+        if raw is None:
+            out.append(None)
+            continue
+        img = _coerce_pil(raw)
+        if img is None:
+            out.append(None)
+            continue
+        if img.mode != "RGB":
+            img = img.convert("RGB")
+        out.append(img)
+    return tuple(out)
+
+
+def active_ref_pairs(
+    slots: tuple[Image.Image | None, ...] | list[Image.Image | None] | None,
+) -> list[tuple[int, Image.Image]]:
+    """(1-based foto index, image) for filled slots only."""
+    pairs: list[tuple[int, Image.Image]] = []
+    for i, img in enumerate(slots or (), start=1):
+        if img is not None:
+            pairs.append((i, img))
+    return pairs
+
+
+def _coerce_pil(raw: Any) -> Image.Image | None:
+    if isinstance(raw, Image.Image):
+        return raw
+    if isinstance(raw, (list, tuple)) and raw:
+        # Gallery item: (image, caption) or nested list
+        return _coerce_pil(raw[0])
+    if isinstance(raw, dict):
+        for key in ("image", "path", "name"):
+            if key in raw and raw[key] is not None:
+                return _coerce_pil(raw[key])
+        return None
+    if isinstance(raw, (str, bytes)):
+        try:
+            return Image.open(raw).convert("RGB")
+        except Exception:
+            return None
+    try:
+        import numpy as np
+
+        if isinstance(raw, np.ndarray):
+            arr = raw
+            if arr.ndim == 2:
+                return Image.fromarray(arr).convert("RGB")
+            if arr.ndim == 3 and arr.shape[-1] in (3, 4):
+                return Image.fromarray(arr).convert("RGB")
+    except Exception:
+        pass
+    return None
+
+
+def ref_label(index: int) -> str:
+    """1-based UI/VL label: foto 1, foto 2, foto 3."""
+    return f"foto {max(1, int(index))}"
+
+
+def ref_images_instruction(
+    count: int = 0,
+    *,
+    for_detail: bool = False,
+    indices: list[int] | tuple[int, ...] | None = None,
+) -> str:
+    """User-message block telling the VL how to use attached reference photos."""
+    if indices is not None:
+        idxs = [int(i) for i in indices if 1 <= int(i) <= REF_IMAGES_MAX]
+    else:
+        n = max(0, min(REF_IMAGES_MAX, int(count)))
+        idxs = list(range(1, n + 1))
+    if not idxs:
+        return ""
+    labels = ", ".join(ref_label(i) for i in idxs)
+    primary = (
+        "masked close-up to describe (primary)"
+        if for_detail
+        else "main scene to caption (primary)"
+    )
+    return (
+        f"Image order: first = {primary}; then reference(s) labeled {labels}. "
+        "When user notes mention foto N / photo N / imagen N, transfer that element's "
+        "appearance into the primary description (e.g. clothing, hat, object). "
+        "Do NOT describe reference photos as separate scenes; "
+        "do NOT invent subjects from refs that notes did not request; "
+        "never write the labels foto 1/2/3 into the final prompt."
+    )
+
+
 @dataclass(frozen=True)
 class PromptRequest:
     image: Image.Image | None
@@ -101,6 +217,8 @@ class PromptRequest:
     language: str = DEFAULT_LANG
     word_min: int = GEN_WORDS_DEFAULT[0]
     word_max: int = GEN_WORDS_DEFAULT[1]
+    # Fixed slots Foto 1–3 (None = vacío); el índice del slot es la etiqueta.
+    ref_slots: tuple[Image.Image | None, ...] = (None, None, None)
 
 
 @dataclass(frozen=True)
@@ -115,6 +233,7 @@ class DetailRequest:
     word_min: int = DETAIL_WORDS_DEFAULT[0]
     word_max: int = DETAIL_WORDS_DEFAULT[1]
     overlap_discard: int = OVERLAP_DISCARD_DEFAULT
+    ref_slots: tuple[Image.Image | None, ...] = (None, None, None)
 
 
 def append_detail(base: str, detail: str) -> str:
@@ -376,7 +495,7 @@ def _normalize_notes(notes: str) -> str:
 
 
 def _notes_to_prose(notes: str, family: str, language: str = DEFAULT_LANG) -> str:
-    """Turn user notes into natural-language prose. Empty notes → empty string."""
+    """Turn user notes into natural language. Empty notes → empty string."""
     text = _normalize_notes(notes)
     if not text:
         return ""
@@ -387,13 +506,13 @@ def _notes_to_prose(notes: str, family: str, language: str = DEFAULT_LANG) -> st
         if lang == LANG_ES:
             return (
                 f"Una escena detallada: {core}. "
-                "Describe primero el sujeto, luego entorno, composición, iluminación, materiales "
-                "y ambiente en prosa conectada — no una lista de keywords."
+                "Describe primero el sujeto, luego entorno, composición, iluminación y materiales "
+                "en lenguaje natural concreto y conciso — no una lista de keywords."
             )
         return (
             f"A detailed scene: {core}. "
-            "Describe the subject first, then environment, composition, lighting, materials and mood "
-            "in connected prose — not a keyword list."
+            "Describe the subject first, then environment, composition, lighting and materials "
+            "in concrete, concise natural language — not a keyword list."
         )
 
     if text[0].islower():
@@ -406,24 +525,26 @@ def _notes_to_prose(notes: str, family: str, language: str = DEFAULT_LANG) -> st
             return (
                 f"{text} "
                 "Mantén relaciones espaciales explícitas; prioriza sustantivos concretos, "
-                "dirección de la luz y materiales. Pon el texto legible de la imagen entre «comillas»."
+                "dirección de la luz y materiales. Sé preciso y conciso; no uses negativas "
+                "del tipo «no hay…». Solo menciona texto entre «comillas» si es legible."
             )
         return (
             f"{text} "
-            "Enfatiza composición, iluminación, materiales y atmósfera en lenguaje natural. "
-            "Pon el texto legible de la imagen entre «comillas»."
+            "Enfatiza composición, iluminación y materiales en lenguaje natural concreto y conciso. "
+            "No uses negativas del tipo «no hay…». Solo menciona texto entre «comillas» si es legible."
         )
 
     if family == "klein9b":
         return (
             f"{text} "
             "Keep spatial relationships explicit; prefer concrete nouns, lighting direction, "
-            'and materials. Put any on-image text in "quotes".'
+            "and materials. Be precise and concise; never use 'there is no…' negatives. "
+            'Quote text only if readable text is present.'
         )
     return (
         f"{text} "
-        "Emphasize composition, lighting, materials and atmosphere in natural language. "
-        'Put any on-image text in "quotes".'
+        "Emphasize composition, lighting and materials in concrete, concise natural language. "
+        "Never use 'there is no…' negatives. Quote text only if readable text is present."
     )
 
 
@@ -459,6 +580,12 @@ class StubProvider:
         notes = _normalize_notes(request.user_notes)
         label = "Krea 2" if stack.family == "krea2" else "Klein 9B"
         img_info = _image_fingerprint(request.image)
+        n_refs = len(active_ref_pairs(request.ref_slots))
+        refs_note = (
+            f" · {n_refs} ref(s) ignorada(s) (stub no ve fotos; usa VL + imagen principal)"
+            if n_refs
+            else ""
+        )
 
         if not notes:
             log(f"stub sin notas · {img_info}")
@@ -467,7 +594,7 @@ class StubProvider:
                 negative_hint="",
                 sampler_hints=_sampler_hints(stack.family, stack.variant),
                 status=(
-                    f"Stub {label} ({stack.variant}) · {img_info}. "
+                    f"Stub {label} ({stack.variant}) · {img_info}{refs_note}. "
                     "v1 **no analiza la imagen**: escribe en Notas qué ves / quieres reproducir "
                     "y pulsa Generate de nuevo. El caption automático llegará con el backend."
                 ),
@@ -477,7 +604,7 @@ class StubProvider:
         prompt = _notes_to_prose(notes, stack.family, lang)
         lang_label = "español" if lang == LANG_ES else "English"
         status = (
-            f"Stub {label} ({stack.variant}) · {img_info} · idioma={lang_label}. "
+            f"Stub {label} ({stack.variant}) · {img_info} · idioma={lang_label}{refs_note}. "
             f"Prompt derivado de tus notas ({len(notes)} caracteres). "
             "La imagen aún no se captiona."
         )
