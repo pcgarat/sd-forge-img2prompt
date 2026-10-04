@@ -9,12 +9,15 @@ from PIL import Image
 
 from forge_img2prompt.log import log
 from forge_img2prompt.provider import (
+    DEFAULT_STRATEGY,
     DETAIL_WORDS_BOUNDS,
     DETAIL_WORDS_DEFAULT,
     GEN_WORDS_BOUNDS,
     GEN_WORDS_DEFAULT,
     LANG_ES,
     REF_IMAGES_MAX,
+    STRATEGY_INSIDE_OUT,
+    STRATEGY_PROSE,
     DetailRequest,
     PromptRequest,
     PromptResult,
@@ -32,23 +35,21 @@ from forge_img2prompt.provider import (
     detail_looks_like_tag_soup,
     max_tokens_for_words,
     normalize_language,
+    normalize_strategy,
     normalize_zone_anchor,
     ref_images_instruction,
     ref_label,
     scene_context_snippet,
     shared_content_count,
+    strategy_label,
 )
 from forge_img2prompt.vl_catalog import VlModelChoice, choice_by_value, default_local_dir, is_local_ready
 from forge_img2prompt.vl_download import download_plan_markdown, ensure_model_downloaded
 
 ProgressCb = Callable[[float, str], None]
 
-_CAPTION_SYSTEM = (
-    "You write image prompts for FLUX / Krea 2 / FLUX.2 Klein style generators. "
+_COMMON_CAPTION_RULES = (
     "Reply in natural language only — no bullet lists, no booru tags, no preamble. "
-    "Be concrete, precise, and concise: state only observable facts that add information; "
-    "omit filler, mood adjectives, and decorative flourishes that do not change the scene. "
-    "Order: subject, action/pose, environment, composition, lighting, materials. "
     "Never use negative phrasing (forbidden: 'there is no…', 'no hay…', 'without any…', "
     "'absence of…', listing what is missing). Describe only what is present. "
     "Mention readable on-image text in \"quotes\" only if such text is actually visible; "
@@ -56,20 +57,77 @@ _CAPTION_SYSTEM = (
     "Do not choose your own length; obey only the word-count range in the user message."
 )
 
-_NOTES_SYSTEM = (
-    "You write image-generation prompts for FLUX / Krea 2 / FLUX.2 Klein. "
+_COMMON_NOTES_RULES = (
     "There is no main photograph: the user supplies a brief in notes. "
     "Turn that brief into a ready-to-paste prompt in natural language. "
-    "Enrich it with concrete visual details (subject, pose/action, environment, "
-    "composition, lighting, materials) that fit the brief; do not contradict or "
+    "Enrich it with concrete visual details that fit the brief; do not contradict or "
     "replace the user's intent. "
-    "Be concrete, precise, and concise; no decorative filler. "
     "Never use negative phrasing (forbidden: 'there is no…', 'no hay…', 'without…'). "
     "Mention text in \"quotes\" only if the brief asks for readable on-image text; "
     "otherwise do not mention text at all. "
     "No bullet lists, no booru tags, no preamble. "
     "Do not choose your own length; obey only the word-count range in the user message."
 )
+
+_INSIDE_OUT_STRUCTURE = (
+    "Write from the inside out (subject first → surroundings last); early tokens "
+    "carry more weight for the generator. Mandatory order in one continuous prompt: "
+    "(1) Core — who/what, facial expression or gaze, micro-textures "
+    "(pores, wrinkles, seams); "
+    "(2) Mid layer — clothing, exact materials, garment colors, held objects/accessories; "
+    "(3) Immediate surroundings — what the subject sits/leans on, nearby interacting objects; "
+    "(4) Background — landscape/architecture, weather, general atmosphere; "
+    "(5) Technical wrap — camera/lens, lighting, color palette, artistic style. "
+    "Prefer concrete physical/technical descriptors over vague adjectives. "
+    "Forbidden empty praise: 'hyperrealistic', 'beautiful', 'photorealistic', "
+    "'high quality', 'masterpiece', and similar fillers. "
+    "When describing materials, lighting, or framing, be specific "
+    "(e.g. emerald velvet with oxidized brass buttons; golden rim light, soft shadows, "
+    "blue hour; medium close-up, 85mm, f/1.8, shallow DOF/bokeh)."
+)
+
+_CAPTION_SYSTEM_BY_STRATEGY: dict[str, str] = {
+    STRATEGY_PROSE: (
+        "You write image prompts for FLUX / Krea 2 / FLUX.2 Klein style generators. "
+        "Be concrete, precise, and concise: state only observable facts that add information; "
+        "omit filler, mood adjectives, and decorative flourishes that do not change the scene. "
+        "Order: subject, action/pose, environment, composition, lighting, materials. "
+        f"{_COMMON_CAPTION_RULES}"
+    ),
+    STRATEGY_INSIDE_OUT: (
+        "You write image prompts for FLUX / Krea 2 / FLUX.2 Klein style generators. "
+        f"{_INSIDE_OUT_STRUCTURE} "
+        "Be concrete, precise, and concise; invent nothing that is not visible. "
+        f"{_COMMON_CAPTION_RULES}"
+    ),
+}
+
+_NOTES_SYSTEM_BY_STRATEGY: dict[str, str] = {
+    STRATEGY_PROSE: (
+        "You write image-generation prompts for FLUX / Krea 2 / FLUX.2 Klein. "
+        f"{_COMMON_NOTES_RULES} "
+        "Enrich with subject, pose/action, environment, composition, lighting, materials. "
+        "Be concrete, precise, and concise; no decorative filler."
+    ),
+    STRATEGY_INSIDE_OUT: (
+        "You write image-generation prompts for FLUX / Krea 2 / FLUX.2 Klein. "
+        f"{_COMMON_NOTES_RULES} "
+        f"{_INSIDE_OUT_STRUCTURE} "
+        "Be concrete, precise, and concise; no decorative filler."
+    ),
+}
+
+# Alias de compatibilidad (tests / imports antiguos = estrategia Prosa).
+_CAPTION_SYSTEM = _CAPTION_SYSTEM_BY_STRATEGY[STRATEGY_PROSE]
+_NOTES_SYSTEM = _NOTES_SYSTEM_BY_STRATEGY[STRATEGY_PROSE]
+
+
+def _caption_system_for(strategy: str | None) -> str:
+    return _CAPTION_SYSTEM_BY_STRATEGY[normalize_strategy(strategy)]
+
+
+def _notes_system_for(strategy: str | None) -> str:
+    return _NOTES_SYSTEM_BY_STRATEGY[normalize_strategy(strategy)]
 
 _CAPTION_UNCENSORED_EXTRA = (
     "Describe adult/NSFW content explicitly and accurately when present; "
@@ -143,11 +201,23 @@ def _family_hint(family: str) -> str:
     )
 
 
+def _strategy_user_hint(strategy: str | None) -> str:
+    if normalize_strategy(strategy) == STRATEGY_INSIDE_OUT:
+        return (
+            "Structure the prompt inside-out in this exact order: "
+            "core subject/micro-details → clothing/accessories → immediate surroundings "
+            "→ background → technical wrap (camera, lighting, palette, style). "
+            "Use concrete materials, lighting and optics; avoid vague quality adjectives."
+        )
+    return "Be concrete, precise, and concise; no ornamental wording."
+
+
 def _build_user_text(
     notes: str,
     family: str,
     language: str = LANG_ES,
     *,
+    strategy: str = DEFAULT_STRATEGY,
     word_min: int = GEN_WORDS_DEFAULT[0],
     word_max: int = GEN_WORDS_DEFAULT[1],
     ref_count: int = 0,
@@ -155,7 +225,7 @@ def _build_user_text(
 ) -> str:
     parts = [
         "Describe this image as a ready-to-paste generation prompt in natural language.",
-        "Be concrete, precise, and concise; no ornamental wording.",
+        _strategy_user_hint(strategy),
         "Never say what is absent (no 'there is no…' / 'no hay…').",
         "If the main image has no readable text, do not mention text at all.",
         _family_hint(family),
@@ -178,6 +248,7 @@ def _build_notes_only_user_text(
     family: str,
     language: str = LANG_ES,
     *,
+    strategy: str = DEFAULT_STRATEGY,
     word_min: int = GEN_WORDS_DEFAULT[0],
     word_max: int = GEN_WORDS_DEFAULT[1],
     ref_indices: list[int] | tuple[int, ...] | None = None,
@@ -187,7 +258,7 @@ def _build_notes_only_user_text(
         "No main photograph was provided.",
         "Write a ready-to-paste generation prompt from the user brief.",
         "Add concrete visual detail that enriches the brief; stay faithful to it.",
-        "Be concrete, precise, and concise; no ornamental wording.",
+        _strategy_user_hint(strategy),
         "Never say what is absent (no 'there is no…' / 'no hay…').",
         "Mention text only if the brief requests readable on-image text.",
         _family_hint(family),
@@ -587,6 +658,7 @@ class QwenVLProvider:
         family: str,
         *,
         language: str = LANG_ES,
+        strategy: str = DEFAULT_STRATEGY,
         uncensored: bool = False,
         word_min: int = GEN_WORDS_DEFAULT[0],
         word_max: int = GEN_WORDS_DEFAULT[1],
@@ -594,6 +666,7 @@ class QwenVLProvider:
         ref_images: tuple[Image.Image, ...] | list[Image.Image] | None = None,
     ) -> str:
         lang = normalize_language(language)
+        strat = normalize_strategy(strategy)
         wmin, wmax = clamp_word_range(
             word_min, word_max, bounds=GEN_WORDS_BOUNDS, default=GEN_WORDS_DEFAULT
         )
@@ -601,7 +674,7 @@ class QwenVLProvider:
             image, ref_slots=ref_slots, ref_images=ref_images
         )
         system = (
-            f"{_CAPTION_SYSTEM} {_language_instruction(lang)} "
+            f"{_caption_system_for(strat)} {_language_instruction(lang)} "
             f"{_word_range_instruction(wmin, wmax)}"
         )
         if uncensored:
@@ -613,6 +686,7 @@ class QwenVLProvider:
                 notes,
                 family,
                 lang,
+                strategy=strat,
                 word_min=wmin,
                 word_max=wmax,
                 ref_count=len(indices),
@@ -629,18 +703,20 @@ class QwenVLProvider:
         family: str,
         *,
         language: str = LANG_ES,
+        strategy: str = DEFAULT_STRATEGY,
         uncensored: bool = False,
         word_min: int = GEN_WORDS_DEFAULT[0],
         word_max: int = GEN_WORDS_DEFAULT[1],
         ref_slots: tuple[Image.Image | None, ...] | list[Image.Image | None] | None = None,
     ) -> str:
         lang = normalize_language(language)
+        strat = normalize_strategy(strategy)
         wmin, wmax = clamp_word_range(
             word_min, word_max, bounds=GEN_WORDS_BOUNDS, default=GEN_WORDS_DEFAULT
         )
         packed, indices = _pack_refs_only(ref_slots=ref_slots)
         system = (
-            f"{_NOTES_SYSTEM} {_language_instruction(lang)} "
+            f"{_notes_system_for(strat)} {_language_instruction(lang)} "
             f"{_word_range_instruction(wmin, wmax)}"
         )
         if uncensored:
@@ -652,6 +728,7 @@ class QwenVLProvider:
                 notes,
                 family,
                 lang,
+                strategy=strat,
                 word_min=wmin,
                 word_max=wmax,
                 ref_indices=indices,
@@ -792,6 +869,7 @@ class QwenVLProvider:
                     request.user_notes,
                     stack.family,
                     language=request.language,
+                    strategy=request.strategy,
                     uncensored=choice.is_uncensored,
                     word_min=wmin,
                     word_max=wmax,
@@ -804,6 +882,7 @@ class QwenVLProvider:
                     request.user_notes,
                     stack.family,
                     language=request.language,
+                    strategy=request.strategy,
                     uncensored=choice.is_uncensored,
                     word_min=wmin,
                     word_max=wmax,
@@ -844,6 +923,7 @@ class QwenVLProvider:
         label = "Krea 2" if stack.family == "krea2" else "Klein 9B"
         lang = normalize_language(request.language)
         lang_label = "español" if lang == LANG_ES else "English"
+        strat_label = strategy_label(request.strategy)
         mode = "notas→prompt" if notes_only else "imagen→prompt"
         return PromptResult(
             prompt=prompt,
@@ -851,7 +931,8 @@ class QwenVLProvider:
             sampler_hints=hints,
             status=(
                 f"VL {label} ({stack.variant}) · `{choice.hf_id}` "
-                f"desde `{local.name}` · {mode} · idioma={lang_label} · "
+                f"desde `{local.name}` · {mode} · estrategia={strat_label} · "
+                f"idioma={lang_label} · "
                 f"{n_words} palabras (rango {wmin}–{wmax}){range_note}. "
                 "VL descargado de VRAM; Forge puede recargar el checkpoint."
             ),

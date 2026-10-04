@@ -94,6 +94,64 @@ def test_caption_system_style_rules():
     assert "only if" in low or "actually visible" in low
 
 
+def test_inside_out_strategy_prompts():
+    from forge_img2prompt.provider import STRATEGY_INSIDE_OUT, STRATEGY_PROSE
+    from forge_img2prompt.vl_provider import (
+        _build_notes_only_user_text,
+        _build_user_text,
+        _caption_system_for,
+        _notes_system_for,
+    )
+
+    prose_sys = _caption_system_for(STRATEGY_PROSE).lower()
+    inside_sys = _caption_system_for(STRATEGY_INSIDE_OUT).lower()
+    assert "subject, action/pose" in prose_sys or "subject, action" in prose_sys
+    assert "inside out" in inside_sys or "inside-out" in inside_sys
+    assert "hyperrealistic" in inside_sys
+    assert "micro-textures" in inside_sys or "micro textures" in inside_sys.replace("-", " ")
+    assert "technical wrap" in inside_sys
+
+    user = _build_user_text(
+        "prioridad chaqueta",
+        "krea2",
+        LANG_ES,
+        strategy=STRATEGY_INSIDE_OUT,
+        word_min=40,
+        word_max=80,
+    ).lower()
+    assert "inside-out" in user or "inside out" in user
+    assert "clothing" in user or "accessories" in user
+
+    notes_sys = _notes_system_for(STRATEGY_INSIDE_OUT).lower()
+    assert "inside out" in notes_sys or "inside-out" in notes_sys
+    notes_user = _build_notes_only_user_text(
+        "un gato naranja",
+        "krea2",
+        LANG_ES,
+        strategy=STRATEGY_INSIDE_OUT,
+        word_min=40,
+        word_max=80,
+    ).lower()
+    assert "inside-out" in notes_user or "inside out" in notes_user
+
+
+def test_normalize_strategy_aliases():
+    from forge_img2prompt.provider import (
+        STRATEGY_INSIDE_OUT,
+        STRATEGY_PROSE,
+        normalize_strategy,
+        strategy_label,
+    )
+
+    assert normalize_strategy("prose") == STRATEGY_PROSE
+    assert normalize_strategy("Prosa") == STRATEGY_PROSE
+    assert normalize_strategy("inside_out") == STRATEGY_INSIDE_OUT
+    assert normalize_strategy("Dentro → fuera") == STRATEGY_INSIDE_OUT
+    assert normalize_strategy("dentro-fuera") == STRATEGY_INSIDE_OUT
+    assert normalize_strategy("weird") == STRATEGY_PROSE
+    assert strategy_label(STRATEGY_INSIDE_OUT) == "Dentro → fuera"
+
+
 def test_family_hint_has_no_length():
     from forge_img2prompt.vl_provider import _family_hint
 

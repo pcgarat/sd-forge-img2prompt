@@ -41,6 +41,7 @@ def test_prefs_roundtrip(tmp_path: Path):
             "det_wmax": 30,
             "det_overlap": 0,
             "language": "en",
+            "strategy": "inside_out",
             "vl_value": "huihui-2b",
         },
     )
@@ -50,6 +51,7 @@ def test_prefs_roundtrip(tmp_path: Path):
     assert loaded["gen_wmax"] == 100
     assert loaded["det_overlap"] == 0
     assert loaded["language"] == "en"
+    assert loaded["strategy"] == "inside_out"
     assert loaded["vl_value"] == "huihui-2b"
 
 
@@ -57,3 +59,4 @@ def test_prefs_defaults_when_missing(tmp_path: Path):
     data = load_prefs(tmp_path)
     assert data["gen_wmin"] == GEN_WORDS_DEFAULT[0]
     assert data["det_wmax"] == DETAIL_WORDS_DEFAULT[1]
+    assert data["strategy"] == "prose"

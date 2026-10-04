@@ -9,6 +9,7 @@ from typing import Any
 from forge_img2prompt.log import log
 from forge_img2prompt.provider import (
     DEFAULT_LANG,
+    DEFAULT_STRATEGY,
     DETAIL_WORDS_BOUNDS,
     DETAIL_WORDS_DEFAULT,
     GEN_WORDS_BOUNDS,
@@ -17,6 +18,7 @@ from forge_img2prompt.provider import (
     OVERLAP_DISCARD_DEFAULT,
     clamp_overlap_discard,
     clamp_word_range,
+    normalize_strategy,
 )
 
 _PREFS_NAME = "ui_prefs.json"
@@ -28,6 +30,7 @@ _DEFAULTS: dict[str, Any] = {
     "det_wmax": DETAIL_WORDS_DEFAULT[1],
     "det_overlap": OVERLAP_DISCARD_DEFAULT,
     "language": DEFAULT_LANG,
+    "strategy": DEFAULT_STRATEGY,
     "vl_value": "",
 }
 
@@ -66,6 +69,7 @@ def load_prefs(ext_dir: str | Path) -> dict[str, Any]:
     data["det_overlap"] = clamp_overlap_discard(data.get("det_overlap"))
     lang = str(data.get("language") or DEFAULT_LANG).strip().lower()
     data["language"] = lang if lang in ("es", "en") else DEFAULT_LANG
+    data["strategy"] = normalize_strategy(data.get("strategy"))
     data["vl_value"] = str(data.get("vl_value") or "")
     return data
 
@@ -88,6 +92,7 @@ def save_prefs(ext_dir: str | Path, updates: dict[str, Any]) -> dict[str, Any]:
     current["gen_wmin"], current["gen_wmax"] = g_lo, g_hi
     current["det_wmin"], current["det_wmax"] = d_lo, d_hi
     current["det_overlap"] = clamp_overlap_discard(current.get("det_overlap"))
+    current["strategy"] = normalize_strategy(current.get("strategy"))
     path = prefs_path(ext_dir)
     try:
         path.write_text(

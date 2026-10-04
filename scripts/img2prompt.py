@@ -32,12 +32,14 @@ from forge_img2prompt.prefs import (
 )
 from forge_img2prompt.provider import (
     DEFAULT_LANG,
+    DEFAULT_STRATEGY,
     DETAIL_WORDS_BOUNDS,
     DETAIL_WORDS_DEFAULT,
     GEN_WORDS_BOUNDS,
     GEN_WORDS_DEFAULT,
     LANG_CHOICES,
     OVERLAP_DISCARD_BOUNDS,
+    STRATEGY_CHOICES,
     DetailRequest,
     PromptRequest,
     clamp_overlap_discard,
@@ -191,6 +193,9 @@ def on_ui_tabs():
     default_lang = prefs.get("language") or DEFAULT_LANG
     if default_lang not in {v for _, v in LANG_CHOICES}:
         default_lang = DEFAULT_LANG
+    default_strategy = prefs.get("strategy") or DEFAULT_STRATEGY
+    if default_strategy not in {v for _, v in STRATEGY_CHOICES}:
+        default_strategy = DEFAULT_STRATEGY
     gen_lo, gen_hi = int(prefs["gen_wmin"]), int(prefs["gen_wmax"])
     det_lo, det_hi = int(prefs["det_wmin"]), int(prefs["det_wmax"])
     overlap0 = int(prefs["det_overlap"])
@@ -305,6 +310,14 @@ def on_ui_tabs():
                         min_width=40,
                         elem_id="img2prompt_refresh_vl",
                     )
+                    strategy_dd = gr.Dropdown(
+                        label="Estrategia",
+                        choices=list(STRATEGY_CHOICES),
+                        value=default_strategy,
+                        interactive=True,
+                        scale=1,
+                        info="Prosa = orden actual. Dentro → fuera = núcleo→fondo→técnica.",
+                    )
                     lang_dd = gr.Dropdown(
                         label="Idioma del prompt",
                         choices=list(LANG_CHOICES),
@@ -390,6 +403,7 @@ def on_ui_tabs():
             det_raw: str,
             overlap: float,
             language: str,
+            strategy: str,
             vl_value: str,
         ):
             g_lo, g_hi = parse_range_text(
@@ -407,6 +421,7 @@ def on_ui_tabs():
                     "det_wmax": d_hi,
                     "det_overlap": clamp_overlap_discard(overlap),
                     "language": language or DEFAULT_LANG,
+                    "strategy": strategy or DEFAULT_STRATEGY,
                     "vl_value": vl_value or "",
                 },
             )
@@ -416,6 +431,7 @@ def on_ui_tabs():
             editor: dict[str, Any] | Image.Image | None,
             notes_val: str,
             vl_value: str,
+            strategy: str,
             language: str,
             gen_raw: str,
             ref1=None,
@@ -495,6 +511,7 @@ def on_ui_tabs():
                     user_notes=notes_val or "",
                     stack=stack,
                     language=language,
+                    strategy=strategy or DEFAULT_STRATEGY,
                     word_min=wmin,
                     word_max=wmax,
                     ref_slots=refs,
@@ -693,19 +710,26 @@ def on_ui_tabs():
             inputs=[image],
             outputs=[crop_preview],
         )
-        for src in (gen_range, det_range, det_overlap, lang_dd, vl_dd):
+        for src in (gen_range, det_range, det_overlap, lang_dd, strategy_dd, vl_dd):
             src.change(
                 fn=_persist_prefs,
-                inputs=[gen_range, det_range, det_overlap, lang_dd, vl_dd],
+                inputs=[
+                    gen_range,
+                    det_range,
+                    det_overlap,
+                    lang_dd,
+                    strategy_dd,
+                    vl_dd,
+                ],
             )
         # Forge Neo = Gradio 4.x → parámetro `js` (no `_js`).
         # El preprocesador fuerza el valor del dual-range al payload del click.
         _JS_SYNC_GEN = """
-(img, notes, vl, lang, gen_raw, r1, r2, r3) => {
+(img, notes, vl, strategy, lang, gen_raw, r1, r2, r3) => {
   if (window.img2promptSyncRanges) window.img2promptSyncRanges();
   const root = document.getElementById("img2prompt_gen_range");
   const el = root && root.querySelector("textarea, input");
-  return [img, notes, vl, lang, el ? el.value : gen_raw, r1, r2, r3];
+  return [img, notes, vl, strategy, lang, el ? el.value : gen_raw, r1, r2, r3];
 }
 """.strip()
         _JS_SYNC_DET = """
@@ -722,6 +746,7 @@ def on_ui_tabs():
                 image,
                 notes,
                 vl_dd,
+                strategy_dd,
                 lang_dd,
                 gen_range,
                 gen_ref1,
