@@ -8,6 +8,7 @@ from forge_img2prompt.log import log
 from forge_img2prompt.ollama_client import chat_with_image
 from forge_img2prompt.ollama_settings import get_ollama_config
 from forge_img2prompt.provider import (
+    DEFAULT_STRATEGY,
     DETAIL_WORDS_BOUNDS,
     DETAIL_WORDS_DEFAULT,
     GEN_WORDS_BOUNDS,
@@ -28,22 +29,24 @@ from forge_img2prompt.provider import (
     detail_looks_like_tag_soup,
     max_tokens_for_words,
     normalize_language,
+    normalize_strategy,
     normalize_zone_anchor,
     scene_context_snippet,
     shared_content_count,
+    strategy_label,
 )
 from forge_img2prompt.vl_catalog import VlModelChoice
 from forge_img2prompt.vl_provider import (
-    _CAPTION_SYSTEM,
     _CAPTION_UNCENSORED_EXTRA,
     _DETAIL_SYSTEM,
     _IDENTIFY_SYSTEM,
-    _NOTES_SYSTEM,
     _build_detail_user_text,
     _build_identify_user_text,
     _build_notes_only_user_text,
     _build_user_text,
+    _caption_system_for,
     _language_instruction,
+    _notes_system_for,
     _pack_primary_and_refs,
     _pack_refs_only,
     _word_range_instruction,
@@ -80,6 +83,7 @@ class OllamaVLProvider:
         family: str,
         *,
         language: str = LANG_ES,
+        strategy: str = DEFAULT_STRATEGY,
         uncensored: bool = False,
         word_min: int = GEN_WORDS_DEFAULT[0],
         word_max: int = GEN_WORDS_DEFAULT[1],
@@ -88,6 +92,7 @@ class OllamaVLProvider:
         ref_images=None,
     ) -> str:
         lang = normalize_language(language)
+        strat = normalize_strategy(strategy)
         wmin, wmax = clamp_word_range(
             word_min, word_max, bounds=GEN_WORDS_BOUNDS, default=GEN_WORDS_DEFAULT
         )
@@ -95,7 +100,7 @@ class OllamaVLProvider:
             image, ref_slots=ref_slots, ref_images=ref_images
         )
         system = (
-            f"{_CAPTION_SYSTEM} {_language_instruction(lang)} "
+            f"{_caption_system_for(strat)} {_language_instruction(lang)} "
             f"{_word_range_instruction(wmin, wmax)}"
         )
         if uncensored:
@@ -107,6 +112,7 @@ class OllamaVLProvider:
                 notes,
                 family,
                 lang,
+                strategy=strat,
                 word_min=wmin,
                 word_max=wmax,
                 ref_count=len(indices),
@@ -122,6 +128,7 @@ class OllamaVLProvider:
         family: str,
         *,
         language: str = LANG_ES,
+        strategy: str = DEFAULT_STRATEGY,
         uncensored: bool = False,
         word_min: int = GEN_WORDS_DEFAULT[0],
         word_max: int = GEN_WORDS_DEFAULT[1],
@@ -129,12 +136,13 @@ class OllamaVLProvider:
         ref_slots=None,
     ) -> str:
         lang = normalize_language(language)
+        strat = normalize_strategy(strategy)
         wmin, wmax = clamp_word_range(
             word_min, word_max, bounds=GEN_WORDS_BOUNDS, default=GEN_WORDS_DEFAULT
         )
         packed, indices = _pack_refs_only(ref_slots=ref_slots)
         system = (
-            f"{_NOTES_SYSTEM} {_language_instruction(lang)} "
+            f"{_notes_system_for(strat)} {_language_instruction(lang)} "
             f"{_word_range_instruction(wmin, wmax)}"
         )
         if uncensored:
@@ -146,6 +154,7 @@ class OllamaVLProvider:
                 notes,
                 family,
                 lang,
+                strategy=strat,
                 word_min=wmin,
                 word_max=wmax,
                 ref_indices=indices,
@@ -275,6 +284,7 @@ class OllamaVLProvider:
                     request.user_notes,
                     stack.family,
                     language=request.language,
+                    strategy=request.strategy,
                     uncensored=choice.is_uncensored,
                     word_min=wmin,
                     word_max=wmax,
@@ -288,6 +298,7 @@ class OllamaVLProvider:
                     request.user_notes,
                     stack.family,
                     language=request.language,
+                    strategy=request.strategy,
                     uncensored=choice.is_uncensored,
                     word_min=wmin,
                     word_max=wmax,
@@ -323,6 +334,7 @@ class OllamaVLProvider:
         label = "Krea 2" if stack.family == "krea2" else "Klein 9B"
         lang = normalize_language(request.language)
         lang_label = "español" if lang == LANG_ES else "English"
+        strat_label = strategy_label(request.strategy)
         mode = "notas→prompt" if notes_only else "imagen→prompt"
         return PromptResult(
             prompt=prompt,
@@ -330,7 +342,8 @@ class OllamaVLProvider:
             sampler_hints=hints,
             status=(
                 f"Ollama {label} ({stack.variant}) · `{cfg.model}` "
-                f"@ `{cfg.base_url}` · {mode} · idioma={lang_label} · "
+                f"@ `{cfg.base_url}` · {mode} · estrategia={strat_label} · "
+                f"idioma={lang_label} · "
                 f"{n_words} palabras (rango {wmin}–{wmax}){range_note}. "
                 "VRAM Forge intacta (VL en Ollama; keep_alive=0 → descarga tras caption)."
             ),

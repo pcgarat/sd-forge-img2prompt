@@ -21,6 +21,19 @@ LANG_CHOICES: tuple[tuple[str, str], ...] = (
 )
 DEFAULT_LANG = LANG_ES
 
+# Estrategias de redacción del prompt global (Generate). Detalle de zona no aplica.
+STRATEGY_PROSE = "prose"
+STRATEGY_INSIDE_OUT = "inside_out"
+STRATEGY_CHOICES: tuple[tuple[str, str], ...] = (
+    ("Prosa", STRATEGY_PROSE),
+    ("Dentro → fuera", STRATEGY_INSIDE_OUT),
+)
+DEFAULT_STRATEGY = STRATEGY_PROSE
+STRATEGY_LABELS: dict[str, str] = {
+    STRATEGY_PROSE: "Prosa",
+    STRATEGY_INSIDE_OUT: "Dentro → fuera",
+}
+
 # Rangos de palabras (UI + providers). Bounds = límites absolutos del slider.
 GEN_WORDS_BOUNDS: tuple[int, int] = (20, 500)
 GEN_WORDS_DEFAULT: tuple[int, int] = (45, 90)
@@ -215,6 +228,7 @@ class PromptRequest:
     user_notes: str
     stack: StackInfo
     language: str = DEFAULT_LANG
+    strategy: str = DEFAULT_STRATEGY
     word_min: int = GEN_WORDS_DEFAULT[0]
     word_max: int = GEN_WORDS_DEFAULT[1]
     # Fixed slots Foto 1–3 (None = vacío); el índice del slot es la etiqueta.
@@ -446,6 +460,31 @@ def normalize_language(language: str | None) -> str:
     if raw in (LANG_EN, "english", "eng", "en-us", "en-gb"):
         return LANG_EN
     return DEFAULT_LANG
+
+
+def normalize_strategy(strategy: str | None) -> str:
+    raw = (strategy or "").strip().lower()
+    for ch in (" ", "-", "→", "—", "/", "\\"):
+        raw = raw.replace(ch, "_")
+    while "__" in raw:
+        raw = raw.replace("__", "_")
+    raw = raw.strip("_")
+    if raw in (
+        STRATEGY_INSIDE_OUT,
+        "dentro_fuera",
+        "dentrofuera",
+        "insideout",
+        "outward",
+    ):
+        return STRATEGY_INSIDE_OUT
+    if raw in (STRATEGY_PROSE, "prosa", "natural"):
+        return STRATEGY_PROSE
+    return DEFAULT_STRATEGY
+
+
+def strategy_label(strategy: str | None) -> str:
+    key = normalize_strategy(strategy)
+    return STRATEGY_LABELS.get(key, STRATEGY_LABELS[DEFAULT_STRATEGY])
 
 
 @dataclass(frozen=True)

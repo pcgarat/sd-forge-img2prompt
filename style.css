@@ -53,6 +53,22 @@
   object-fit: contain !important;
 }
 
+/* Slots de referencia (General / Zona): más altos que el default Gradio */
+.img2prompt-ref-slot .image-container,
+.img2prompt-ref-slot [data-testid="image"],
+.img2prompt-ref-slot .wrap,
+.img2prompt-ref-slot .empty,
+.img2prompt-ref-slot .image-frame {
+  min-height: 200px !important;
+  max-height: 220px !important;
+}
+
+.img2prompt-ref-slot img,
+.img2prompt-ref-slot .image-frame img {
+  max-height: 220px !important;
+  object-fit: contain !important;
+}
+
 /* Dual-thumb range (two stacked <input type=range>) */
 .img2prompt-dual {
   --img2prompt-lo: 20%;

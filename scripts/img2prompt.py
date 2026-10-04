@@ -32,12 +32,14 @@ from forge_img2prompt.prefs import (
 )
 from forge_img2prompt.provider import (
     DEFAULT_LANG,
+    DEFAULT_STRATEGY,
     DETAIL_WORDS_BOUNDS,
     DETAIL_WORDS_DEFAULT,
     GEN_WORDS_BOUNDS,
     GEN_WORDS_DEFAULT,
     LANG_CHOICES,
     OVERLAP_DISCARD_BOUNDS,
+    STRATEGY_CHOICES,
     DetailRequest,
     PromptRequest,
     clamp_overlap_discard,
@@ -164,13 +166,18 @@ def _ref_image_slot(label: str, elem_id: str):
     kwargs: dict[str, Any] = {
         "label": label,
         "type": "pil",
-        "height": 120,
+        "height": 220,
         "elem_id": elem_id,
+        "elem_classes": ["img2prompt-ref-slot"],
     }
     try:
         return gr.Image(**kwargs, sources=["upload", "clipboard"])
     except TypeError:
-        return gr.Image(**kwargs)
+        kwargs.pop("elem_classes", None)
+        try:
+            return gr.Image(**kwargs, sources=["upload", "clipboard"])
+        except TypeError:
+            return gr.Image(**kwargs)
 
 
 def _ref_image_row(prefix: str) -> tuple:
@@ -191,6 +198,9 @@ def on_ui_tabs():
     default_lang = prefs.get("language") or DEFAULT_LANG
     if default_lang not in {v for _, v in LANG_CHOICES}:
         default_lang = DEFAULT_LANG
+    default_strategy = prefs.get("strategy") or DEFAULT_STRATEGY
+    if default_strategy not in {v for _, v in STRATEGY_CHOICES}:
+        default_strategy = DEFAULT_STRATEGY
     gen_lo, gen_hi = int(prefs["gen_wmin"]), int(prefs["gen_wmax"])
     det_lo, det_hi = int(prefs["det_wmin"]), int(prefs["det_wmax"])
     overlap0 = int(prefs["det_overlap"])
@@ -247,7 +257,22 @@ def on_ui_tabs():
                     except TypeError:
                         image = gr.ImageEditor(**image_kwargs)
 
-                with gr.Row():
+                with gr.Accordion("General", open=True):
+                    notes = gr.Textbox(
+                        label="Notas / descripción (Generate; obligatorias sin imagen)",
+                        lines=3,
+                        placeholder="Con imagen: prioriza la chaqueta… / Sin imagen: "
+                        "un astronauta en Marte al atardecer… "
+                        "(el modelo añade detalle visual).",
+                    )
+                    gr.Markdown(
+                        "Referencias opcionales (**Foto 1–3**): cítalas en **Notas** "
+                        "como *foto 1*, *foto 2* o *foto 3* (según el slot)."
+                    )
+                    with gr.Row():
+                        gen_ref1, gen_ref2, gen_ref3 = _ref_image_row("gen")
+
+                with gr.Accordion("Zona", open=False):
                     crop_preview = gr.Image(
                         label="Crop de la máscara (lo que se reanaliza)",
                         type="pil",
@@ -255,42 +280,27 @@ def on_ui_tabs():
                         interactive=False,
                         elem_id="img2prompt_crop_preview",
                     )
-                zone_prompt = gr.Textbox(
-                    label="Prompt de la zona (solo máscara; no se mezcla al general)",
-                    lines=2,
-                    interactive=True,
-                    show_copy_button=True,
-                    placeholder="Tras Añadir detalle aparecerá aquí el texto de la zona…",
-                )
-                zone_notes = gr.Textbox(
-                    label="Notas de zona (solo para Añadir detalle)",
-                    lines=2,
-                    placeholder="Opcional: p. ej. barba / costura / ojos… "
-                    "o «el sombrero de la foto 1». "
-                    "No uses aquí las notas globales de la escena.",
-                )
-                with gr.Accordion("Referencias de zona (foto 1–3, opcional)", open=False):
+                    zone_notes = gr.Textbox(
+                        label="Notas de zona (solo para Añadir detalle)",
+                        lines=2,
+                        placeholder="Opcional: p. ej. barba / costura / ojos… "
+                        "o «el sombrero de la foto 1». "
+                        "No uses aquí las notas globales de la escena.",
+                    )
+                    zone_prompt = gr.Textbox(
+                        label="Prompt de la zona (solo máscara; no se mezcla al general)",
+                        lines=2,
+                        interactive=True,
+                        show_copy_button=True,
+                        placeholder="Tras Añadir detalle aparecerá aquí el texto de la zona…",
+                    )
                     gr.Markdown(
-                        "Adjunta hasta 3 imágenes y cítalas en **Notas de zona** "
+                        "Referencias de zona (**Foto 1–3**): cítalas en **Notas de zona** "
                         "como *foto 1*, *foto 2* o *foto 3* (según el slot)."
                     )
                     with gr.Row():
                         zone_ref1, zone_ref2, zone_ref3 = _ref_image_row("zone")
 
-                notes = gr.Textbox(
-                    label="Notas / descripción (Generate; obligatorias sin imagen)",
-                    lines=3,
-                    placeholder="Con imagen: prioriza la chaqueta… / Sin imagen: "
-                    "un astronauta en Marte al atardecer… "
-                    "(el modelo añade detalle visual).",
-                )
-                with gr.Accordion("Referencias Generate (foto 1–3, opcional)", open=False):
-                    gr.Markdown(
-                        "Adjunta hasta 3 imágenes y cítalas en **Notas** "
-                        "como *foto 1*, *foto 2* o *foto 3* (según el slot)."
-                    )
-                    with gr.Row():
-                        gen_ref1, gen_ref2, gen_ref3 = _ref_image_row("gen")
                 with gr.Row():
                     vl_dd = gr.Dropdown(
                         label="Modelo VL",
@@ -304,6 +314,13 @@ def on_ui_tabs():
                         scale=0,
                         min_width=40,
                         elem_id="img2prompt_refresh_vl",
+                    )
+                    strategy_dd = gr.Dropdown(
+                        label="Estrategia",
+                        choices=list(STRATEGY_CHOICES),
+                        value=default_strategy,
+                        interactive=True,
+                        scale=1,
                     )
                     lang_dd = gr.Dropdown(
                         label="Idioma del prompt",
@@ -390,6 +407,7 @@ def on_ui_tabs():
             det_raw: str,
             overlap: float,
             language: str,
+            strategy: str,
             vl_value: str,
         ):
             g_lo, g_hi = parse_range_text(
@@ -407,6 +425,7 @@ def on_ui_tabs():
                     "det_wmax": d_hi,
                     "det_overlap": clamp_overlap_discard(overlap),
                     "language": language or DEFAULT_LANG,
+                    "strategy": strategy or DEFAULT_STRATEGY,
                     "vl_value": vl_value or "",
                 },
             )
@@ -416,6 +435,7 @@ def on_ui_tabs():
             editor: dict[str, Any] | Image.Image | None,
             notes_val: str,
             vl_value: str,
+            strategy: str,
             language: str,
             gen_raw: str,
             ref1=None,
@@ -495,6 +515,7 @@ def on_ui_tabs():
                     user_notes=notes_val or "",
                     stack=stack,
                     language=language,
+                    strategy=strategy or DEFAULT_STRATEGY,
                     word_min=wmin,
                     word_max=wmax,
                     ref_slots=refs,
@@ -693,19 +714,26 @@ def on_ui_tabs():
             inputs=[image],
             outputs=[crop_preview],
         )
-        for src in (gen_range, det_range, det_overlap, lang_dd, vl_dd):
+        for src in (gen_range, det_range, det_overlap, lang_dd, strategy_dd, vl_dd):
             src.change(
                 fn=_persist_prefs,
-                inputs=[gen_range, det_range, det_overlap, lang_dd, vl_dd],
+                inputs=[
+                    gen_range,
+                    det_range,
+                    det_overlap,
+                    lang_dd,
+                    strategy_dd,
+                    vl_dd,
+                ],
             )
         # Forge Neo = Gradio 4.x → parámetro `js` (no `_js`).
         # El preprocesador fuerza el valor del dual-range al payload del click.
         _JS_SYNC_GEN = """
-(img, notes, vl, lang, gen_raw, r1, r2, r3) => {
+(img, notes, vl, strategy, lang, gen_raw, r1, r2, r3) => {
   if (window.img2promptSyncRanges) window.img2promptSyncRanges();
   const root = document.getElementById("img2prompt_gen_range");
   const el = root && root.querySelector("textarea, input");
-  return [img, notes, vl, lang, el ? el.value : gen_raw, r1, r2, r3];
+  return [img, notes, vl, strategy, lang, el ? el.value : gen_raw, r1, r2, r3];
 }
 """.strip()
         _JS_SYNC_DET = """
@@ -722,6 +750,7 @@ def on_ui_tabs():
                 image,
                 notes,
                 vl_dd,
+                strategy_dd,
                 lang_dd,
                 gen_range,
                 gen_ref1,
