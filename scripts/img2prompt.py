@@ -166,13 +166,18 @@ def _ref_image_slot(label: str, elem_id: str):
     kwargs: dict[str, Any] = {
         "label": label,
         "type": "pil",
-        "height": 120,
+        "height": 220,
         "elem_id": elem_id,
+        "elem_classes": ["img2prompt-ref-slot"],
     }
     try:
         return gr.Image(**kwargs, sources=["upload", "clipboard"])
     except TypeError:
-        return gr.Image(**kwargs)
+        kwargs.pop("elem_classes", None)
+        try:
+            return gr.Image(**kwargs, sources=["upload", "clipboard"])
+        except TypeError:
+            return gr.Image(**kwargs)
 
 
 def _ref_image_row(prefix: str) -> tuple:
@@ -252,7 +257,22 @@ def on_ui_tabs():
                     except TypeError:
                         image = gr.ImageEditor(**image_kwargs)
 
-                with gr.Row():
+                with gr.Accordion("General", open=True):
+                    notes = gr.Textbox(
+                        label="Notas / descripción (Generate; obligatorias sin imagen)",
+                        lines=3,
+                        placeholder="Con imagen: prioriza la chaqueta… / Sin imagen: "
+                        "un astronauta en Marte al atardecer… "
+                        "(el modelo añade detalle visual).",
+                    )
+                    gr.Markdown(
+                        "Referencias opcionales (**Foto 1–3**): cítalas en **Notas** "
+                        "como *foto 1*, *foto 2* o *foto 3* (según el slot)."
+                    )
+                    with gr.Row():
+                        gen_ref1, gen_ref2, gen_ref3 = _ref_image_row("gen")
+
+                with gr.Accordion("Zona", open=False):
                     crop_preview = gr.Image(
                         label="Crop de la máscara (lo que se reanaliza)",
                         type="pil",
@@ -260,42 +280,27 @@ def on_ui_tabs():
                         interactive=False,
                         elem_id="img2prompt_crop_preview",
                     )
-                zone_prompt = gr.Textbox(
-                    label="Prompt de la zona (solo máscara; no se mezcla al general)",
-                    lines=2,
-                    interactive=True,
-                    show_copy_button=True,
-                    placeholder="Tras Añadir detalle aparecerá aquí el texto de la zona…",
-                )
-                zone_notes = gr.Textbox(
-                    label="Notas de zona (solo para Añadir detalle)",
-                    lines=2,
-                    placeholder="Opcional: p. ej. barba / costura / ojos… "
-                    "o «el sombrero de la foto 1». "
-                    "No uses aquí las notas globales de la escena.",
-                )
-                with gr.Accordion("Referencias de zona (foto 1–3, opcional)", open=False):
+                    zone_notes = gr.Textbox(
+                        label="Notas de zona (solo para Añadir detalle)",
+                        lines=2,
+                        placeholder="Opcional: p. ej. barba / costura / ojos… "
+                        "o «el sombrero de la foto 1». "
+                        "No uses aquí las notas globales de la escena.",
+                    )
+                    zone_prompt = gr.Textbox(
+                        label="Prompt de la zona (solo máscara; no se mezcla al general)",
+                        lines=2,
+                        interactive=True,
+                        show_copy_button=True,
+                        placeholder="Tras Añadir detalle aparecerá aquí el texto de la zona…",
+                    )
                     gr.Markdown(
-                        "Adjunta hasta 3 imágenes y cítalas en **Notas de zona** "
+                        "Referencias de zona (**Foto 1–3**): cítalas en **Notas de zona** "
                         "como *foto 1*, *foto 2* o *foto 3* (según el slot)."
                     )
                     with gr.Row():
                         zone_ref1, zone_ref2, zone_ref3 = _ref_image_row("zone")
 
-                notes = gr.Textbox(
-                    label="Notas / descripción (Generate; obligatorias sin imagen)",
-                    lines=3,
-                    placeholder="Con imagen: prioriza la chaqueta… / Sin imagen: "
-                    "un astronauta en Marte al atardecer… "
-                    "(el modelo añade detalle visual).",
-                )
-                with gr.Accordion("Referencias Generate (foto 1–3, opcional)", open=False):
-                    gr.Markdown(
-                        "Adjunta hasta 3 imágenes y cítalas en **Notas** "
-                        "como *foto 1*, *foto 2* o *foto 3* (según el slot)."
-                    )
-                    with gr.Row():
-                        gen_ref1, gen_ref2, gen_ref3 = _ref_image_row("gen")
                 with gr.Row():
                     vl_dd = gr.Dropdown(
                         label="Modelo VL",
@@ -316,7 +321,6 @@ def on_ui_tabs():
                         value=default_strategy,
                         interactive=True,
                         scale=1,
-                        info="Prosa = orden actual. Dentro → fuera = núcleo→fondo→técnica.",
                     )
                     lang_dd = gr.Dropdown(
                         label="Idioma del prompt",
