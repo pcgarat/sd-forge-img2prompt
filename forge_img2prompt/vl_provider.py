@@ -8,6 +8,7 @@ import torch
 from PIL import Image
 
 from forge_img2prompt.log import log
+from forge_img2prompt import prompt_log
 from forge_img2prompt.provider import (
     DEFAULT_STRATEGY,
     DETAIL_WORDS_BOUNDS,
@@ -562,6 +563,20 @@ class QwenVLProvider:
             add_generation_prompt=True,
             return_dict=True,
             return_tensors="pt",
+        )
+        prompt_log.record(
+            transport="transformers apply_chat_template → generate",
+            payload=prompt_log.summarize_vl_messages(messages),
+            params={
+                "max_new_tokens": max_new_tokens,
+                "do_sample": False,
+                "device": str(next(self._model.parameters()).device),
+                "inputs": {
+                    k: getattr(v, "shape", None) and list(v.shape)
+                    for k, v in inputs.items()
+                },
+            },
+            images=images,
         )
         try:
             model_device = next(self._model.parameters()).device

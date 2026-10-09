@@ -107,6 +107,20 @@ def chat_with_image(
     if cfg.api_key:
         headers["Authorization"] = f"Bearer {cfg.api_key}"
 
+    from forge_img2prompt import prompt_log
+
+    prompt_log.record(
+        transport="NaN POST /v1/chat/completions",
+        payload=prompt_log.redact_data_urls(payload),
+        params={
+            "max_tokens": int(max_tokens),
+            "temperature": 0.2,
+            "reasoning_effort": "none",
+            "stream": False,
+        },
+        images=images,
+    )
+
     log(
         f"NaN POST {cfg.chat_url} · model={cfg.model} · "
         f"max_tokens={max_tokens} · images={n_images}"

@@ -22,6 +22,7 @@ def _reload_ext_package() -> None:
 _reload_ext_package()
 
 from forge_img2prompt.log import log
+from forge_img2prompt import prompt_log
 from forge_img2prompt.mask_crop import VL_OUTSIDE_RGB, crop_from_editor, editor_to_rgb
 from forge_img2prompt.prefs import (
     dual_range_html,
@@ -179,6 +180,11 @@ def _plan_for_value(vl_value: str) -> str:
         )
     dest = Path(choice.local_path)
     return download_plan_markdown(dest, repo_id=choice.hf_id)
+
+
+def _log_markdown() -> str:
+    """Historial de bodies/params crudos al modelo (acordeón Log)."""
+    return prompt_log.render_markdown()
 
 
 def _ref_image_slot(label: str, elem_id: str):
@@ -423,6 +429,12 @@ def on_ui_tabs():
                 with gr.Row():
                     send_t2i = gr.Button("Send to txt2img")
                     send_i2i = gr.Button("Send to img2img")
+                with gr.Accordion("Log (últimas peticiones)", open=False):
+                    with gr.Row():
+                        log_out = gr.Markdown(value=_log_markdown())
+                    with gr.Row():
+                        refresh_log_btn = gr.Button("↻", min_width=40)
+                        clear_log_btn = gr.Button("Limpiar log")
 
         def _persist_prefs(
             gen_raw: str,
@@ -483,6 +495,7 @@ def on_ui_tabs():
                 f"**Stack:** `{stack.summary}`\n\nPreparando `{choice.hf_id}` "
                 f"(rango {wmin}–{wmax} palabras{refs_status})…",
                 plan,
+                _log_markdown(),
             )
 
             if img is not None and not choice.is_remote:
@@ -500,6 +513,7 @@ def on_ui_tabs():
                                 "",
                                 f"**Stack:** `{stack.summary}`\n\n{event.status}",
                                 event.plan,
+                                _log_markdown(),
                             )
                     except Exception as exc:  # noqa: BLE001
                         yield (
@@ -507,6 +521,7 @@ def on_ui_tabs():
                             "",
                             f"Error descargando `{choice.hf_id}`: {exc}",
                             download_plan_markdown(dest, repo_id=choice.hf_id),
+                            _log_markdown(),
                         )
                         return
 
@@ -516,6 +531,7 @@ def on_ui_tabs():
                             "",
                             f"Descarga incompleta en `{dest}`",
                             download_plan_markdown(dest, repo_id=choice.hf_id),
+                            _log_markdown(),
                         )
                         return
 
@@ -524,6 +540,7 @@ def on_ui_tabs():
                         "",
                         f"**Stack:** `{stack.summary}`\n\nDescarga completa. Caption…",
                         download_plan_markdown(dest, repo_id=choice.hf_id),
+                        _log_markdown(),
                     )
 
             progress(0.72, desc="Caption VL…")
@@ -549,7 +566,7 @@ def on_ui_tabs():
             if result.negative_hint:
                 hints = f"{hints}\n{result.negative_hint}".strip()
             status = f"{stack.summary}\n{result.status}".strip()
-            yield result.prompt, hints, status, _plan_for_value(choice.value)
+            yield result.prompt, hints, status, _plan_for_value(choice.value), _log_markdown()
 
         def _preview_mask_crop(editor: dict[str, Any] | Image.Image | None):
             if not isinstance(editor, dict):
@@ -596,6 +613,7 @@ def on_ui_tabs():
                     plan,
                     None,
                     "",
+                    _log_markdown(),
                 )
                 return
 
@@ -616,6 +634,7 @@ def on_ui_tabs():
                     plan,
                     None,
                     "",
+                    _log_markdown(),
                 )
                 return
 
@@ -638,6 +657,7 @@ def on_ui_tabs():
                 plan,
                 preview_ui,
                 "",
+                _log_markdown(),
             )
 
             if not choice.is_remote:
@@ -657,6 +677,7 @@ def on_ui_tabs():
                                 event.plan,
                                 preview_ui,
                                 "",
+                                _log_markdown(),
                             )
                     except Exception as exc:  # noqa: BLE001
                         yield (
@@ -666,6 +687,7 @@ def on_ui_tabs():
                             download_plan_markdown(dest, repo_id=choice.hf_id),
                             preview_ui,
                             "",
+                            _log_markdown(),
                         )
                         return
 
@@ -677,6 +699,7 @@ def on_ui_tabs():
                             download_plan_markdown(dest, repo_id=choice.hf_id),
                             preview_ui,
                             "",
+                            _log_markdown(),
                         )
                         return
 
@@ -715,6 +738,7 @@ def on_ui_tabs():
                 _plan_for_value(choice.value),
                 preview_ui,
                 zone,
+                _log_markdown(),
             )
 
         vl_dd.change(fn=_plan_for_value, inputs=[vl_dd], outputs=[download_plan])
@@ -779,7 +803,7 @@ def on_ui_tabs():
                 gen_ref2,
                 gen_ref3,
             ],
-            outputs=[prompt_out, hints_out, status_out, download_plan],
+            outputs=[prompt_out, hints_out, status_out, download_plan, log_out],
             js=_JS_SYNC_GEN,
         )
         detail_btn.click(
@@ -796,9 +820,28 @@ def on_ui_tabs():
                 zone_ref2,
                 zone_ref3,
             ],
-            outputs=[prompt_out, hints_out, status_out, download_plan, crop_preview, zone_prompt],
+            outputs=[
+                prompt_out,
+                hints_out,
+                status_out,
+                download_plan,
+                crop_preview,
+                zone_prompt,
+                log_out,
+            ],
             js=_JS_SYNC_DET,
         )
+        refresh_log_btn.click(
+            fn=_log_markdown,
+            inputs=[],
+            outputs=[log_out],
+        )
+
+        def _clear_log():
+            prompt_log.clear()
+            return _log_markdown()
+
+        clear_log_btn.click(fn=_clear_log, inputs=[], outputs=[log_out])
         refresh_btn.click(fn=_refresh_stack, inputs=[], outputs=[status_out])
         ui.load(fn=_refresh_stack, inputs=[], outputs=[status_out])
         ui.load(fn=lambda: _plan_for_value(default_vl), inputs=[], outputs=[download_plan])
