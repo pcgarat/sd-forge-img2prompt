@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import urllib.error
 from unittest.mock import patch
 
 import pytest
@@ -53,7 +54,7 @@ class _Resp:
     def __exit__(self, *a):
         return False
 
-    def read(self):
+    def read(self, *args):
         return json.dumps(self._payload).encode()
 
 
@@ -78,6 +79,20 @@ def test_normalize_base_url_strips_endpoint():
         == "https://api.nan.builders/v1"
     )
     assert normalize_nan_base_url("api.nan.builders/v1/") == "https://api.nan.builders/v1"
+    # Barra final tras el sufijo de endpoint (bug histórico).
+    assert normalize_nan_base_url("https://api.nan.builders/v1/models/") == "https://api.nan.builders/v1"
+    assert (
+        normalize_nan_base_url("https://api.nan.builders/v1/chat/completions/")
+        == "https://api.nan.builders/v1"
+    )
+    assert normalize_nan_base_url("https://api.nan.builders/v1///") == "https://api.nan.builders/v1"
+
+
+def test_get_nan_config_uses_env_base_url(monkeypatch):
+    monkeypatch.setenv("NAN_BASE_URL", "https://proxy.local/v1/models/")
+    cfg = get_nan_config()
+    assert cfg.base_url == "https://proxy.local/v1"
+    assert cfg.models_url == "https://proxy.local/v1/models"
 
 
 def test_get_nan_config_model_override(monkeypatch):
@@ -111,7 +126,7 @@ def test_chat_with_image_builds_openai_payload():
         captured["body"] = json.loads(req.data.decode())
         return _Resp({"choices": [{"message": {"role": "assistant", "content": "  Un square rojo.  "}}]})
 
-    with patch("forge_img2prompt.nan_client.urllib.request.urlopen", fake_urlopen):
+    with patch("forge_img2prompt.nan_client._open", fake_urlopen):
         text = chat_with_image(
             _cfg(),
             system="sys",
@@ -142,7 +157,7 @@ def test_chat_with_multiple_images():
         return _Resp({"choices": [{"message": {"content": "ok"}}]})
 
     imgs = [_red_png(), Image.new("RGB", (8, 8), (0, 255, 0))]
-    with patch("forge_img2prompt.nan_client.urllib.request.urlopen", fake_urlopen):
+    with patch("forge_img2prompt.nan_client._open", fake_urlopen):
         chat_with_image(_cfg(), system="", user_text="refs", image=imgs, max_tokens=16)
     parts = captured["body"]["messages"][0]["content"]
     assert sum(1 for p in parts if p["type"] == "image_url") == 2
@@ -154,7 +169,7 @@ def test_chat_connection_error_message():
     def boom(*a, **k):
         raise urllib.error.URLError("refused")
 
-    with patch("forge_img2prompt.nan_client.urllib.request.urlopen", boom):
+    with patch("forge_img2prompt.nan_client._open", boom):
         with pytest.raises(RuntimeError, match="No se pudo conectar a NaN"):
             chat_with_image(_cfg(), system="", user_text="hi", image=_red_png())
 
@@ -171,7 +186,7 @@ def test_chat_http_error_reports_code():
             fp=None,
         )
 
-    with patch("forge_img2prompt.nan_client.urllib.request.urlopen", boom):
+    with patch("forge_img2prompt.nan_client._open", boom):
         with pytest.raises(RuntimeError, match="NaN HTTP 402"):
             chat_with_image(_cfg(), system="", user_text="hi")
 
@@ -186,7 +201,7 @@ def test_list_vision_models_filters_against_curated():
         ]
     }
     with patch(
-        "forge_img2prompt.nan_client.urllib.request.urlopen",
+        "forge_img2prompt.nan_client._open",
         lambda *a, **k: _Resp(payload),
     ):
         models = list_vision_models(_cfg())
@@ -202,7 +217,7 @@ def test_list_vision_models_fallback_on_error():
     def boom(*a, **k):
         raise urllib.error.URLError("refused")
 
-    with patch("forge_img2prompt.nan_client.urllib.request.urlopen", boom):
+    with patch("forge_img2prompt.nan_client._open", boom):
         models = list_vision_models(_cfg())
     assert models[0] == DEFAULT_NAN_MODEL
     assert set(models) == set(nan_vision_model_ids())
@@ -211,15 +226,68 @@ def test_list_vision_models_fallback_on_error():
 def test_ping_models_ok_and_missing():
     payload = {"data": [{"id": "deepseek-v4-flash"}, {"id": "glm5.3-flash"}]}
     with patch(
-        "forge_img2prompt.nan_client.urllib.request.urlopen",
+        "forge_img2prompt.nan_client._open",
         lambda *a, **k: _Resp(payload),
     ):
         ok, msg = ping_models(_cfg(model="glm5.3-flash"))
     assert ok and "disponible" in msg
 
     with patch(
-        "forge_img2prompt.nan_client.urllib.request.urlopen",
+        "forge_img2prompt.nan_client._open",
         lambda *a, **k: _Resp(payload),
     ):
         ok2, msg2 = ping_models(_cfg(model="no-existe"))
     assert not ok2 and "no lista" in msg2
+
+
+def test_chat_bounds_response_and_error_reads():
+    from forge_img2prompt.nan_client import MAX_ERROR_BYTES, MAX_RESPONSE_BYTES
+
+    seen: list = []
+
+    class _Body:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def read(self, *args):
+            seen.append(args[0] if args else None)
+            return json.dumps(
+                {"choices": [{"message": {"content": "ok"}}]}
+            ).encode()
+
+    with patch("forge_img2prompt.nan_client._open", lambda *a, **k: _Body()):
+        chat_with_image(_cfg(), system="", user_text="hi")
+    assert seen == [MAX_RESPONSE_BYTES]
+
+    class _ErrResp:
+        def read(self, *args):
+            seen.append(args[0] if args else None)
+            return b"quota exceeded"
+
+        def close(self):
+            return None
+
+    def boom(*a, **k):
+        raise urllib.error.HTTPError(
+            url="https://api.nan.builders/v1/chat/completions",
+            code=402,
+            msg="quota",
+            hdrs=None,
+            fp=_ErrResp(),
+        )
+
+    with patch("forge_img2prompt.nan_client._open", boom):
+        with pytest.raises(RuntimeError, match="NaN HTTP 402"):
+            chat_with_image(_cfg(), system="", user_text="hi")
+    assert MAX_ERROR_BYTES in seen
+
+
+def test_jpeg_data_url_via_shared_encoder():
+    from forge_img2prompt.image_encoding import jpeg_data_url
+
+    url = jpeg_data_url(_red_png())
+    assert url.startswith("data:image/jpeg;base64,")
+    assert url.split(",", 1)[1] == _jpeg_data_url(_red_png()).split(",", 1)[1]

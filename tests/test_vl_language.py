@@ -203,7 +203,7 @@ def test_chat_text_only_omits_images(monkeypatch):
         def __exit__(self, *a):
             return False
 
-        def read(self):
+        def read(self, *args):
             return json.dumps(
                 {"message": {"role": "assistant", "content": "A cat on a roof."}}
             ).encode()
@@ -212,7 +212,7 @@ def test_chat_text_only_omits_images(monkeypatch):
         captured["body"] = json.loads(req.data.decode())
         return _Resp()
 
-    with patch("forge_img2prompt.ollama_client.urllib.request.urlopen", fake_urlopen):
+    with patch("forge_img2prompt.ollama_client._open", fake_urlopen):
         text = chat_with_image(
             cfg, system="sys", user_text="brief", image=None, num_predict=32
         )

@@ -1,6 +1,8 @@
 from pathlib import Path
 from unittest.mock import patch
 
+import pytest
+
 from forge_img2prompt.vl_catalog import (
     DEFAULT_HF_ID,
     VL_SPECS,
@@ -14,6 +16,13 @@ from forge_img2prompt.vl_catalog import (
 )
 
 
+@pytest.fixture(autouse=True)
+def _clean_endpoint_env(monkeypatch):
+    """Aísla la preferencia de backends de NAN_*/OLLAMA_* del entorno real."""
+    for var in ("NAN_BASE_URL", "NAN_API_KEY", "OLLAMA_HOST", "OLLAMA_API_KEY"):
+        monkeypatch.delenv(var, raising=False)
+
+
 def _fake_vision_tags():
     return ["qwen3-vl:8b-instruct", "kimi-k3:cloud", "gemma4:31b-cloud"]
 
@@ -22,7 +31,8 @@ def _fake_nan_models():
     return ["deepseek-v4-flash", "glm5.3-flash", "qwen3.8-flash"]
 
 
-def test_catalog_has_nan_ollama_vision_and_hf():
+def test_catalog_has_nan_ollama_vision_and_hf(monkeypatch):
+    monkeypatch.setenv("NAN_API_KEY", "sk-test")  # NaN configurado → descubre vía /models
     with (
         patch(
             "forge_img2prompt.ollama_client.list_vision_models",
@@ -68,6 +78,48 @@ def test_preferred_prefers_ollama_default_over_nan():
     assert pref.hf_id == "qwen3-vl:8b-instruct"
     assert preferred_value(catalog) == "ollama:qwen3-vl:8b-instruct"
     assert sole_model_choice().is_ollama
+
+
+def test_preferred_nan_wins_when_only_nan_configured(monkeypatch):
+    monkeypatch.setenv("NAN_API_KEY", "sk-test")
+    with (
+        patch(
+            "forge_img2prompt.ollama_client.list_vision_models",
+            return_value=_fake_vision_tags(),
+        ),
+        patch(
+            "forge_img2prompt.nan_client.list_vision_models",
+            return_value=_fake_nan_models(),
+        ),
+    ):
+        catalog = list_vl_models()
+    pref = preferred_choice(catalog)
+    assert pref.is_nan and pref.hf_id == "deepseek-v4-flash"
+    assert preferred_value(catalog) == "nan:deepseek-v4-flash"
+
+
+def test_nan_choices_curated_without_network_when_unconfigured():
+    with patch(
+        "forge_img2prompt.nan_client.list_vision_models",
+        side_effect=AssertionError("no debe consultar /models sin configurar NaN"),
+    ):
+        from forge_img2prompt.vl_catalog import nan_choices
+
+        choices = nan_choices()
+    assert choices and all(c.is_nan for c in choices)
+    assert choices[0].hf_id == "deepseek-v4-flash"
+
+
+def test_nan_choices_discovers_when_configured(monkeypatch):
+    monkeypatch.setenv("NAN_API_KEY", "sk-test")
+    with patch(
+        "forge_img2prompt.nan_client.list_vision_models",
+        return_value=_fake_nan_models(),
+    ):
+        from forge_img2prompt.vl_catalog import nan_choices
+
+        choices = nan_choices()
+    assert [c.hf_id for c in choices] == _fake_nan_models()
 
 
 def test_preferred_choice_nan_only_catalog():

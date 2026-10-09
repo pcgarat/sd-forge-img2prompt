@@ -7,6 +7,12 @@ from PIL import Image
 
 from forge_img2prompt.log import log
 from forge_img2prompt.stack import StackInfo
+from forge_img2prompt.strategy_registry import (
+    DEFAULT_STRATEGY,
+    STRATEGY_INSIDE_OUT,
+    STRATEGY_PROSE,
+    make_registry,
+)
 
 _TAG_SOUP_HINTS = (", masterpiece", "1girl,", "best quality,", "ultra detailed,")
 REF_IMAGES_MAX = 3
@@ -22,17 +28,12 @@ LANG_CHOICES: tuple[tuple[str, str], ...] = (
 DEFAULT_LANG = LANG_ES
 
 # Estrategias de redacción del prompt global (Generate). Detalle de zona no aplica.
-STRATEGY_PROSE = "prose"
-STRATEGY_INSIDE_OUT = "inside_out"
-STRATEGY_CHOICES: tuple[tuple[str, str], ...] = (
-    ("Prosa", STRATEGY_PROSE),
-    ("Dentro → fuera", STRATEGY_INSIDE_OUT),
-)
-DEFAULT_STRATEGY = STRATEGY_PROSE
-STRATEGY_LABELS: dict[str, str] = {
-    STRATEGY_PROSE: "Prosa",
-    STRATEGY_INSIDE_OUT: "Dentro → fuera",
-}
+# El catálogo vive en strategies.json; el registro valida y ofrece fallback embebido.
+STRATEGY_REGISTRY = make_registry()
+STRATEGY_CHOICES: tuple[tuple[str, str], ...] = STRATEGY_REGISTRY.choices()
+STRATEGY_SPECS = STRATEGY_REGISTRY.specs
+DEFAULT_STRATEGY = STRATEGY_REGISTRY.default.id
+STRATEGY_LABELS: dict[str, str] = {s.id: s.label for s in STRATEGY_SPECS}
 
 # Rangos de palabras (UI + providers). Bounds = límites absolutos del slider.
 GEN_WORDS_BOUNDS: tuple[int, int] = (20, 500)
@@ -463,28 +464,11 @@ def normalize_language(language: str | None) -> str:
 
 
 def normalize_strategy(strategy: str | None) -> str:
-    raw = (strategy or "").strip().lower()
-    for ch in (" ", "-", "→", "—", "/", "\\"):
-        raw = raw.replace(ch, "_")
-    while "__" in raw:
-        raw = raw.replace("__", "_")
-    raw = raw.strip("_")
-    if raw in (
-        STRATEGY_INSIDE_OUT,
-        "dentro_fuera",
-        "dentrofuera",
-        "insideout",
-        "outward",
-    ):
-        return STRATEGY_INSIDE_OUT
-    if raw in (STRATEGY_PROSE, "prosa", "natural"):
-        return STRATEGY_PROSE
-    return DEFAULT_STRATEGY
+    return STRATEGY_REGISTRY.normalize(strategy)
 
 
 def strategy_label(strategy: str | None) -> str:
-    key = normalize_strategy(strategy)
-    return STRATEGY_LABELS.get(key, STRATEGY_LABELS[DEFAULT_STRATEGY])
+    return STRATEGY_REGISTRY.label(strategy)
 
 
 @dataclass(frozen=True)

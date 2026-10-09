@@ -2,15 +2,14 @@
 
 from __future__ import annotations
 
-import base64
 import json
 import urllib.error
 import urllib.request
-from io import BytesIO
 from typing import Any
 
 from PIL import Image
 
+from forge_img2prompt.image_encoding import png_base64
 from forge_img2prompt.log import log
 from forge_img2prompt.ollama_settings import (
     OLLAMA_VISION_FALLBACK,
@@ -18,21 +17,34 @@ from forge_img2prompt.ollama_settings import (
     is_cloud_model,
 )
 
+MAX_RESPONSE_BYTES = 8_000_000
+MAX_ERROR_BYTES = 2000
+
+
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    """No seguir 3xx: evita reenviar el Bearer a otro host en un redirect."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        raise urllib.error.HTTPError(
+            newurl,
+            code,
+            "redirect bloqueado por seguridad (posible fuga de credenciales)",
+            headers,
+            fp,
+        )
+
+
+_SAFE_OPENER = urllib.request.build_opener(_NoRedirect)
+
+
+def _open(req, *, timeout):
+    """Abre una petición sin seguir redirects (protege el token Bearer)."""
+    return _SAFE_OPENER.open(req, timeout=timeout)
+
 
 def image_to_b64(image: Image.Image, *, max_side: int = 1280) -> str:
     """PNG base64 para el campo ``images`` de /api/chat."""
-    if image.mode != "RGB":
-        image = image.convert("RGB")
-    w, h = image.size
-    if max(w, h) > max_side:
-        scale = max_side / float(max(w, h))
-        image = image.resize(
-            (max(1, int(w * scale)), max(1, int(h * scale))),
-            Image.Resampling.LANCZOS,
-        )
-    buf = BytesIO()
-    image.save(buf, format="PNG", optimize=True)
-    return base64.b64encode(buf.getvalue()).decode("ascii")
+    return png_base64(image, max_side=max_side)
 
 
 def chat_with_image(
@@ -86,12 +98,12 @@ def chat_with_image(
     )
     req = urllib.request.Request(cfg.chat_url, data=body, headers=headers, method="POST")
     try:
-        with urllib.request.urlopen(req, timeout=cfg.timeout) as resp:
-            raw = resp.read().decode("utf-8", errors="replace")
+        with _open(req, timeout=cfg.timeout) as resp:
+            raw = resp.read(MAX_RESPONSE_BYTES).decode("utf-8", errors="replace")
     except urllib.error.HTTPError as exc:
         detail = ""
         try:
-            detail = exc.read().decode("utf-8", errors="replace")[:800]
+            detail = exc.read(MAX_ERROR_BYTES).decode("utf-8", errors="replace")
         except Exception:
             detail = str(exc.reason)
         raise RuntimeError(
@@ -129,8 +141,8 @@ def _fetch_tags_payload(cfg: OllamaConfig) -> dict[str, Any] | None:
         headers["Authorization"] = f"Bearer {cfg.api_key}"
     req = urllib.request.Request(cfg.tags_url, headers=headers, method="GET")
     try:
-        with urllib.request.urlopen(req, timeout=min(10.0, cfg.timeout)) as resp:
-            data = json.loads(resp.read().decode("utf-8", errors="replace"))
+        with _open(req, timeout=min(10.0, cfg.timeout)) as resp:
+            data = json.loads(resp.read(MAX_RESPONSE_BYTES).decode("utf-8", errors="replace"))
     except Exception:  # noqa: BLE001
         return None
     return data if isinstance(data, dict) else None

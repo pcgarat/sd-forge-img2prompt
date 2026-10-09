@@ -82,11 +82,11 @@ def test_ollama_choice_in_catalog():
         def __exit__(self, *a):
             return False
 
-        def read(self):
+        def read(self, *args):
             return json.dumps(payload).encode()
 
     with patch(
-        "forge_img2prompt.ollama_client.urllib.request.urlopen",
+        "forge_img2prompt.ollama_client._open",
         lambda *a, **k: _Resp(),
     ):
         cats = list_vl_models()
@@ -131,7 +131,7 @@ def test_list_vision_models_filters_and_dedupes():
         def __exit__(self, *a):
             return False
 
-        def read(self):
+        def read(self, *args):
             return json.dumps(payload).encode()
 
     cfg = OllamaConfig(
@@ -141,7 +141,7 @@ def test_list_vision_models_filters_and_dedupes():
         timeout=5,
     )
     with patch(
-        "forge_img2prompt.ollama_client.urllib.request.urlopen",
+        "forge_img2prompt.ollama_client._open",
         lambda *a, **k: _Resp(),
     ):
         names = list_vision_models(cfg)
@@ -165,7 +165,7 @@ def test_list_vision_models_fallback_on_error():
     def boom(*a, **k):
         raise urllib.error.URLError("refused")
 
-    with patch("forge_img2prompt.ollama_client.urllib.request.urlopen", boom):
+    with patch("forge_img2prompt.ollama_client._open", boom):
         names = list_vision_models(cfg)
     assert names == list(OLLAMA_VISION_FALLBACK)
     assert "deepseek-v4.1-flash:cloud" not in names
@@ -187,7 +187,7 @@ def test_chat_with_image_builds_native_payload(monkeypatch):
         def __exit__(self, *a):
             return False
 
-        def read(self):
+        def read(self, *args):
             return json.dumps(
                 {"message": {"role": "assistant", "content": "  Red square.  "}}
             ).encode()
@@ -198,7 +198,7 @@ def test_chat_with_image_builds_native_payload(monkeypatch):
         captured["body"] = json.loads(req.data.decode())
         return _Resp()
 
-    with patch("forge_img2prompt.ollama_client.urllib.request.urlopen", fake_urlopen):
+    with patch("forge_img2prompt.ollama_client._open", fake_urlopen):
         text = chat_with_image(
             cfg,
             system="sys",
@@ -233,7 +233,7 @@ def test_chat_with_multiple_images(monkeypatch):
         def __exit__(self, *a):
             return False
 
-        def read(self):
+        def read(self, *args):
             return json.dumps(
                 {"message": {"role": "assistant", "content": "ok"}}
             ).encode()
@@ -243,7 +243,7 @@ def test_chat_with_multiple_images(monkeypatch):
         return _Resp()
 
     imgs = [_red_png(), Image.new("RGB", (8, 8), (0, 255, 0))]
-    with patch("forge_img2prompt.ollama_client.urllib.request.urlopen", fake_urlopen):
+    with patch("forge_img2prompt.ollama_client._open", fake_urlopen):
         chat_with_image(cfg, system="", user_text="refs", image=imgs, num_predict=16)
     assert len(captured["body"]["messages"][0]["images"]) == 2
 
@@ -261,7 +261,7 @@ def test_chat_connection_error_message():
     def boom(*a, **k):
         raise urllib.error.URLError("refused")
 
-    with patch("forge_img2prompt.ollama_client.urllib.request.urlopen", boom):
+    with patch("forge_img2prompt.ollama_client._open", boom):
         with pytest.raises(RuntimeError, match="No se pudo conectar a Ollama"):
             chat_with_image(cfg, system="", user_text="hi", image=_red_png())
 
@@ -281,13 +281,13 @@ def test_ping_tags_ok():
         def __exit__(self, *a):
             return False
 
-        def read(self):
+        def read(self, *args):
             return json.dumps(
                 {"models": [{"name": "qwen3-vl:8b-instruct"}]}
             ).encode()
 
     with patch(
-        "forge_img2prompt.ollama_client.urllib.request.urlopen",
+        "forge_img2prompt.ollama_client._open",
         lambda *a, **k: _Resp(),
     ):
         ok, msg = ping_tags(cfg)
@@ -342,11 +342,11 @@ def test_ping_tags_cloud_ok_without_local_tag():
         def __exit__(self, *a):
             return False
 
-        def read(self):
+        def read(self, *args):
             return json.dumps({"models": [{"name": "qwen3-vl:8b-instruct"}]}).encode()
 
     with patch(
-        "forge_img2prompt.ollama_client.urllib.request.urlopen",
+        "forge_img2prompt.ollama_client._open",
         lambda *a, **k: _Resp(),
     ):
         ok, msg = ping_tags(cfg)
@@ -371,7 +371,7 @@ def test_chat_sends_bearer_when_api_key(monkeypatch):
         def __exit__(self, *a):
             return False
 
-        def read(self):
+        def read(self, *args):
             return json.dumps(
                 {"message": {"role": "assistant", "content": "ok"}}
             ).encode()
@@ -382,7 +382,7 @@ def test_chat_sends_bearer_when_api_key(monkeypatch):
         )
         return _Resp()
 
-    with patch("forge_img2prompt.ollama_client.urllib.request.urlopen", fake_urlopen):
+    with patch("forge_img2prompt.ollama_client._open", fake_urlopen):
         text = chat_with_image(
             cfg,
             system="",

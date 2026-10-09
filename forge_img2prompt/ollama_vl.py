@@ -97,7 +97,7 @@ class OllamaVLProvider:
         )
 
     def _error_hint(self, exc: Exception, cfg: OllamaConfig, choice: VlModelChoice) -> str:
-        return f"({exc})"
+        return f"(`{cfg.model}` @ `{cfg.base_url}`): {exc}"
 
     # --- Prompts (idénticos en ambos backends) -------------------------------
 
@@ -289,7 +289,7 @@ class OllamaVLProvider:
                     sampler_hints=hints,
                     status=(
                         "Sin imagen principal: escribe en **Notas** qué quieres "
-                        "generar y pulsa Generate (Ollama ampliará el brief)."
+                        f"generar y pulsa Generate ({self.backend_label} ampliará el brief)."
                     ),
                 )
 

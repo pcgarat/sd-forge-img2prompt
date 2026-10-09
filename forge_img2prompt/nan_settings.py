@@ -48,14 +48,29 @@ def vision_risk(model_id: str) -> str:
     return ""
 
 
+def _env_base_url() -> str:
+    return (os.environ.get("NAN_BASE_URL") or "").strip()
+
+
 def normalize_nan_base_url(raw: str | None) -> str:
     """Base OpenAI-compatible; tolera que peguen la URL completa del endpoint."""
-    base = (raw or "").strip() or DEFAULT_NAN_BASE_URL
-    for suffix in ("/chat/completions", "/models", "/"):
-        if base.endswith(suffix):
-            base = base[: -len(suffix)]
+    base = (raw or "").strip()
+    if not base:
+        base = _env_base_url() or DEFAULT_NAN_BASE_URL
     if not base.startswith("http://") and not base.startswith("https://"):
         base = f"https://{base}"
+    # Quita barras y, repetidamente, sufijos de endpoint (/chat/completions, /models).
+    while True:
+        stripped = base.rstrip("/")
+        if stripped != base:
+            base = stripped
+            continue
+        for suffix in ("/chat/completions", "/models"):
+            if base.endswith(suffix):
+                base = base[: -len(suffix)]
+                break
+        else:
+            break
     return base.rstrip("/")
 
 
@@ -111,10 +126,9 @@ def _opt(name: str, default):
 
 def get_nan_config(*, model: str | None = None) -> NanConfig:
     """URL/key/timeout desde Settings (o env); modelo desde la pestaña."""
-    base = normalize_nan_base_url(
-        str(_opt(OPT_BASE_URL, "") or "").strip()
-        or (os.environ.get("NAN_BASE_URL") or "")
-    )
+    # ``normalize_nan_base_url`` resuelve la env cuando el campo está vacío o es
+    # el default registrado (así ``NAN_BASE_URL`` sigue vivo tras registrar Settings).
+    base = normalize_nan_base_url(str(_opt(OPT_BASE_URL, "") or "").strip())
     tag = normalize_nan_model(model)
     key = str(_opt(OPT_API_KEY, "") or "").strip()
     if not key:

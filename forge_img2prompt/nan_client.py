@@ -9,32 +9,42 @@ from typing import Any
 
 from PIL import Image
 
+from forge_img2prompt.image_encoding import jpeg_data_url
 from forge_img2prompt.log import log
 from forge_img2prompt.nan_settings import (
     DEFAULT_NAN_MODEL,
     NanConfig,
     nan_vision_model_ids,
 )
-from forge_img2prompt.ollama_client import image_to_b64
+
+MAX_RESPONSE_BYTES = 8_000_000
+MAX_ERROR_BYTES = 2000
+
+
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    """No seguir 3xx: evita reenviar el Bearer a otro host en un redirect."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        raise urllib.error.HTTPError(
+            newurl,
+            code,
+            "redirect bloqueado por seguridad (posible fuga de credenciales)",
+            headers,
+            fp,
+        )
+
+
+_SAFE_OPENER = urllib.request.build_opener(_NoRedirect)
+
+
+def _open(req, *, timeout):
+    """Abre una petición sin seguir redirects (protege el token Bearer)."""
+    return _SAFE_OPENER.open(req, timeout=timeout)
 
 
 def _jpeg_data_url(image: Image.Image, *, max_side: int = 1280) -> str:
     """data:image/jpeg;base64,… para el campo OpenAI ``image_url``."""
-    import base64
-    from io import BytesIO
-
-    if image.mode != "RGB":
-        image = image.convert("RGB")
-    w, h = image.size
-    if max(w, h) > max_side:
-        scale = max_side / float(max(w, h))
-        image = image.resize(
-            (max(1, int(w * scale)), max(1, int(h * scale))),
-            Image.Resampling.LANCZOS,
-        )
-    buf = BytesIO()
-    image.save(buf, format="JPEG", quality=90, optimize=True)
-    return "data:image/jpeg;base64," + base64.b64encode(buf.getvalue()).decode("ascii")
+    return jpeg_data_url(image, max_side=max_side)
 
 
 def _vision_user_content(
@@ -103,12 +113,12 @@ def chat_with_image(
     )
     req = urllib.request.Request(cfg.chat_url, data=body, headers=headers, method="POST")
     try:
-        with urllib.request.urlopen(req, timeout=cfg.timeout) as resp:
-            raw = resp.read().decode("utf-8", errors="replace")
+        with _open(req, timeout=cfg.timeout) as resp:
+            raw = resp.read(MAX_RESPONSE_BYTES).decode("utf-8", errors="replace")
     except urllib.error.HTTPError as exc:
         detail = ""
         try:
-            detail = exc.read().decode("utf-8", errors="replace")[:800]
+            detail = exc.read(MAX_ERROR_BYTES).decode("utf-8", errors="replace")
         except Exception:
             detail = str(exc.reason)
         raise RuntimeError(
@@ -150,8 +160,8 @@ def _fetch_models_payload(cfg: NanConfig) -> list[str] | None:
         headers["Authorization"] = f"Bearer {cfg.api_key}"
     req = urllib.request.Request(cfg.models_url, headers=headers, method="GET")
     try:
-        with urllib.request.urlopen(req, timeout=min(10.0, cfg.timeout)) as resp:
-            data = json.loads(resp.read().decode("utf-8", errors="replace"))
+        with _open(req, timeout=min(10.0, cfg.timeout)) as resp:
+            data = json.loads(resp.read(MAX_RESPONSE_BYTES).decode("utf-8", errors="replace"))
     except Exception:  # noqa: BLE001
         return None
     items = data.get("data") if isinstance(data, dict) else None
