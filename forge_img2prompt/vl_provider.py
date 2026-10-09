@@ -16,8 +16,7 @@ from forge_img2prompt.provider import (
     GEN_WORDS_DEFAULT,
     LANG_ES,
     REF_IMAGES_MAX,
-    STRATEGY_INSIDE_OUT,
-    STRATEGY_PROSE,
+    STRATEGY_REGISTRY,
     DetailRequest,
     PromptRequest,
     PromptResult,
@@ -69,65 +68,20 @@ _COMMON_NOTES_RULES = (
     "Do not choose your own length; obey only the word-count range in the user message."
 )
 
-_INSIDE_OUT_STRUCTURE = (
-    "Write from the inside out (subject first → surroundings last); early tokens "
-    "carry more weight for the generator. Mandatory order in one continuous prompt: "
-    "(1) Core — who/what, facial expression or gaze, micro-textures "
-    "(pores, wrinkles, seams); "
-    "(2) Mid layer — clothing, exact materials, garment colors, held objects/accessories; "
-    "(3) Immediate surroundings — what the subject sits/leans on, nearby interacting objects; "
-    "(4) Background — landscape/architecture, weather, general atmosphere; "
-    "(5) Technical wrap — camera/lens, lighting, color palette, artistic style. "
-    "Prefer concrete physical/technical descriptors over vague adjectives. "
-    "Forbidden empty praise: 'hyperrealistic', 'beautiful', 'photorealistic', "
-    "'high quality', 'masterpiece', and similar fillers. "
-    "When describing materials, lighting, or framing, be specific "
-    "(e.g. emerald velvet with oxidized brass buttons; golden rim light, soft shadows, "
-    "blue hour; medium close-up, 85mm, f/1.8, shallow DOF/bokeh)."
-)
-
-_CAPTION_SYSTEM_BY_STRATEGY: dict[str, str] = {
-    STRATEGY_PROSE: (
-        "You write image prompts for FLUX / Krea 2 / FLUX.2 Klein style generators. "
-        "Be concrete, precise, and concise: state only observable facts that add information; "
-        "omit filler, mood adjectives, and decorative flourishes that do not change the scene. "
-        "Order: subject, action/pose, environment, composition, lighting, materials. "
-        f"{_COMMON_CAPTION_RULES}"
-    ),
-    STRATEGY_INSIDE_OUT: (
-        "You write image prompts for FLUX / Krea 2 / FLUX.2 Klein style generators. "
-        f"{_INSIDE_OUT_STRUCTURE} "
-        "Be concrete, precise, and concise; invent nothing that is not visible. "
-        f"{_COMMON_CAPTION_RULES}"
-    ),
-}
-
-_NOTES_SYSTEM_BY_STRATEGY: dict[str, str] = {
-    STRATEGY_PROSE: (
-        "You write image-generation prompts for FLUX / Krea 2 / FLUX.2 Klein. "
-        f"{_COMMON_NOTES_RULES} "
-        "Enrich with subject, pose/action, environment, composition, lighting, materials. "
-        "Be concrete, precise, and concise; no decorative filler."
-    ),
-    STRATEGY_INSIDE_OUT: (
-        "You write image-generation prompts for FLUX / Krea 2 / FLUX.2 Klein. "
-        f"{_COMMON_NOTES_RULES} "
-        f"{_INSIDE_OUT_STRUCTURE} "
-        "Be concrete, precise, and concise; no decorative filler."
-    ),
-}
-
-# Alias de compatibilidad (tests / imports antiguos = estrategia Prosa).
-_CAPTION_SYSTEM = _CAPTION_SYSTEM_BY_STRATEGY[STRATEGY_PROSE]
-_NOTES_SYSTEM = _NOTES_SYSTEM_BY_STRATEGY[STRATEGY_PROSE]
-
 
 def _caption_system_for(strategy: str | None) -> str:
-    return _CAPTION_SYSTEM_BY_STRATEGY[normalize_strategy(strategy)]
+    spec = STRATEGY_REGISTRY.get(strategy)
+    return f"{spec.caption_system} {_COMMON_CAPTION_RULES}"
 
 
 def _notes_system_for(strategy: str | None) -> str:
-    return _NOTES_SYSTEM_BY_STRATEGY[normalize_strategy(strategy)]
+    spec = STRATEGY_REGISTRY.get(strategy)
+    return f"{spec.notes_system} {_COMMON_NOTES_RULES}"
+
+
+# Alias de compatibilidad (tests / imports antiguos = estrategia por defecto).
+_CAPTION_SYSTEM = _caption_system_for(DEFAULT_STRATEGY)
+_NOTES_SYSTEM = _notes_system_for(DEFAULT_STRATEGY)
 
 _CAPTION_UNCENSORED_EXTRA = (
     "Describe adult/NSFW content explicitly and accurately when present; "
@@ -202,13 +156,9 @@ def _family_hint(family: str) -> str:
 
 
 def _strategy_user_hint(strategy: str | None) -> str:
-    if normalize_strategy(strategy) == STRATEGY_INSIDE_OUT:
-        return (
-            "Structure the prompt inside-out in this exact order: "
-            "core subject/micro-details → clothing/accessories → immediate surroundings "
-            "→ background → technical wrap (camera, lighting, palette, style). "
-            "Use concrete materials, lighting and optics; avoid vague quality adjectives."
-        )
+    spec = STRATEGY_REGISTRY.get(strategy)
+    if spec.user_hint:
+        return spec.user_hint
     return "Be concrete, precise, and concise; no ornamental wording."
 
 
@@ -1125,14 +1075,32 @@ class QwenVLProvider:
 
 
 class CompositeProvider:
-    """Caption VL/Ollama (imagen o notas); stub solo si no hay nada que enviar."""
+    """Caption VL/Ollama/NaN (imagen o notas); stub solo si no hay nada que enviar."""
 
     def __init__(self) -> None:
         self.stub = StubProvider()
         self.vl = QwenVLProvider()
-        from forge_img2prompt.ollama_vl import OllamaVLProvider
+        from forge_img2prompt.ollama_vl import NanVLProvider, OllamaVLProvider
 
         self.ollama = OllamaVLProvider()
+        self.nan = NanVLProvider()
+        # (predicado sobre la elección, método) — despacho table-driven.
+        self._routes = (
+            (lambda c: c.is_nan, "nan"),
+            (lambda c: c.is_ollama, "ollama"),
+        )
+
+    @staticmethod
+    def _remote(request: PromptRequest) -> bool:
+        notes = (request.user_notes or "").strip()
+        has_refs = bool(active_ref_pairs(request.ref_slots))
+        return request.image is not None or bool(notes) or has_refs
+
+    def _provider_for(self, choice: VlModelChoice):
+        for matches, attr in self._routes:
+            if matches(choice):
+                return getattr(self, attr)
+        return self.vl
 
     def generate(
         self,
@@ -1141,15 +1109,11 @@ class CompositeProvider:
         *,
         progress: ProgressCb | None = None,
     ) -> PromptResult:
-        notes = (request.user_notes or "").strip()
-        has_refs = bool(active_ref_pairs(request.ref_slots))
         # Sin imagen: el modelo expande Notas (refs opcionales). Stub solo si vacío.
-        if request.image is not None or notes or has_refs:
+        if self._remote(request):
             choice = choice_by_value(vl_value) if vl_value else choice_by_value("")
             assert choice is not None
-            if choice.is_ollama:
-                return self.ollama.generate(request, choice, progress=progress)
-            return self.vl.generate(request, choice, progress=progress)
+            return self._provider_for(choice).generate(request, choice, progress=progress)
         return self.stub.generate(request)
 
     def detail(
@@ -1161,15 +1125,15 @@ class CompositeProvider:
     ) -> PromptResult:
         choice = choice_by_value(vl_value) if vl_value else choice_by_value("")
         assert choice is not None
-        if choice.is_ollama:
-            return self.ollama.detail(request, choice, progress=progress)
-        return self.vl.detail(request, choice, progress=progress)
+        return self._provider_for(choice).detail(request, choice, progress=progress)
 
 
 def initial_status_markdown() -> str:
     from forge_img2prompt.vl_catalog import preferred_choice
 
     choice = preferred_choice()
+    if choice.is_nan:
+        return f"Backend **NaN** · modelo `{choice.hf_id}` (API, sin VRAM Forge)."
     if choice.is_ollama:
         return f"Backend **Ollama** · modelo `{choice.hf_id}` (sin VRAM Forge)."
     local = Path(choice.local_path)

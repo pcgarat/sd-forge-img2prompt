@@ -3,9 +3,21 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
+from forge_img2prompt.nan_settings import (
+    DEFAULT_NAN_BASE_URL,
+    DEFAULT_NAN_MODEL,
+    NAN_VALUE,
+    get_nan_config,
+    is_nan_value,
+    nan_vision_model_ids,
+    parse_nan_value,
+    vision_label,
+    vision_risk,
+)
 from forge_img2prompt.ollama_settings import (
     DEFAULT_OLLAMA_MODEL,
     OLLAMA_VALUE,
+    default_base_url,
     get_ollama_config,
     is_cloud_model,
     is_ollama_value,
@@ -73,6 +85,9 @@ class VlModelChoice:
 
     @property
     def value(self) -> str:
+        if self.kind == "nan":
+            model = (self.hf_id or "").strip()
+            return f"nan:{model}" if model else NAN_VALUE
         if self.kind == "ollama":
             tag = (self.hf_id or "").strip() or DEFAULT_OLLAMA_MODEL
             return f"ollama:{tag}"
@@ -86,6 +101,15 @@ class VlModelChoice:
     @property
     def is_ollama(self) -> bool:
         return self.kind == "ollama"
+
+    @property
+    def is_nan(self) -> bool:
+        return self.kind == "nan"
+
+    @property
+    def is_remote(self) -> bool:
+        """Backend API/servicio (sin descarga HF ni VRAM en el proceso Forge)."""
+        return self.kind in ("ollama", "nan")
 
 
 def text_encoder_root() -> Path:
@@ -218,9 +242,75 @@ def ollama_choices() -> list[VlModelChoice]:
     return out
 
 
+def _nan_choice_for(model: str, *, recommended: bool = False) -> VlModelChoice:
+    model = (model or "").strip() or DEFAULT_NAN_MODEL
+    risk = vision_risk(model)
+    risk_note = " · ⚠ tier premium" if risk == "premium" else ""
+    stars = "★ " if recommended else ""
+    return VlModelChoice(
+        label=f"{stars}NaN · {vision_label(model)}{risk_note} · sin VRAM Forge",
+        local_path="",
+        hf_id=model,
+        kind="nan",
+        caption_ready=True,
+        recommended=recommended,
+        risk=risk,
+    )
+
+
+def nan_choice(model: str | None = None) -> VlModelChoice:
+    """Una entrada NaN (compat). Sin modelo → default."""
+    return _nan_choice_for(
+        model or DEFAULT_NAN_MODEL,
+        recommended=(model or DEFAULT_NAN_MODEL) == DEFAULT_NAN_MODEL,
+    )
+
+
+def nan_configured() -> bool:
+    """True si NaN tiene URL no-default o API key (env o Settings). Evita red inútil."""
+    try:
+        cfg = get_nan_config()
+    except Exception:  # noqa: BLE001
+        return False
+    return bool(cfg.api_key) or cfg.base_url.rstrip("/") != DEFAULT_NAN_BASE_URL
+
+
+def nan_choices(*, discover: bool = True) -> list[VlModelChoice]:
+    """Entradas NaN con visión.
+
+    Con ``discover`` y NaN configurado, consulta ``/v1/models`` una vez; si no,
+    usa el registro curado (sin red), de modo que el arranque de Forge no llama
+    a un endpoint que no se va a usar.
+    """
+    if not discover or not nan_configured():
+        models = list(nan_vision_model_ids())
+    else:
+        from forge_img2prompt.nan_client import list_vision_models
+
+        models = list_vision_models(get_nan_config())
+    if not models:
+        models = [DEFAULT_NAN_MODEL]
+    if DEFAULT_NAN_MODEL in models:
+        ordered = [DEFAULT_NAN_MODEL, *[m for m in models if m != DEFAULT_NAN_MODEL]]
+    else:
+        ordered = list(models)
+    return [
+        _nan_choice_for(
+            model,
+            recommended=model == DEFAULT_NAN_MODEL
+            or (i == 0 and DEFAULT_NAN_MODEL not in ordered),
+        )
+        for i, model in enumerate(ordered)
+    ]
+
+
 def list_vl_models(extra_dirs=None) -> list[VlModelChoice]:
     del extra_dirs
-    return [*ollama_choices(), *(_choice_from_spec(s) for s in VL_SPECS)]
+    return [
+        *nan_choices(),
+        *ollama_choices(),
+        *(_choice_from_spec(s) for s in VL_SPECS),
+    ]
 
 
 def dropdown_choices(catalog: list[VlModelChoice] | None = None) -> list[tuple[str, str]]:
@@ -228,10 +318,36 @@ def dropdown_choices(catalog: list[VlModelChoice] | None = None) -> list[tuple[s
     return [(c.label, c.value) for c in catalog]
 
 
+def _ollama_configured() -> bool:
+    """True si Ollama tiene URL no-default o API key (evita asumir local disponible)."""
+    try:
+        cfg = get_ollama_config()
+    except Exception:  # noqa: BLE001
+        return False
+    return bool(cfg.api_key) or cfg.base_url.rstrip("/") != default_base_url().rstrip("/")
+
+
+def _prefer_nan(catalog: list[VlModelChoice]) -> VlModelChoice | None:
+    for c in catalog:
+        if c.is_nan and c.hf_id == DEFAULT_NAN_MODEL:
+            return c
+    for c in catalog:
+        if c.is_nan:
+            return c
+    return None
+
+
 def preferred_choice(catalog: list[VlModelChoice] | None = None) -> VlModelChoice:
     catalog = catalog if catalog is not None else list_vl_models()
     if not catalog:
         return ollama_choice()
+    # NaN configurado explícitamente gana cuando Ollama no lo está: así no se
+    # propone un backend local que nadie configuró por delante del que sí.
+    if nan_configured() and not _ollama_configured():
+        nan_pref = _prefer_nan(catalog)
+        if nan_pref is not None:
+            return nan_pref
+    # Ollama: default → local → cloud.
     for c in catalog:
         if c.is_ollama and c.hf_id == DEFAULT_OLLAMA_MODEL:
             return c
@@ -241,6 +357,9 @@ def preferred_choice(catalog: list[VlModelChoice] | None = None) -> VlModelChoic
     for c in catalog:
         if c.is_ollama:
             return c
+    nan_pref = _prefer_nan(catalog)
+    if nan_pref is not None:
+        return nan_pref
     for c in catalog:
         if c.recommended and c.local_path and is_local_ready(Path(c.local_path)):
             return c
@@ -257,20 +376,31 @@ def preferred_value(catalog: list[VlModelChoice] | None = None) -> str:
     return preferred_choice(catalog).value
 
 
-def choice_by_value(value: str, catalog: list[VlModelChoice] | None = None) -> VlModelChoice | None:
-    catalog = catalog if catalog is not None else list_vl_models()
-    value = (value or "").strip()
-    if not value:
-        return preferred_choice(catalog)
-    if is_ollama_value(value):
-        tag = parse_ollama_value(value)
+def _resolve_nan(value: str, catalog: list[VlModelChoice]) -> VlModelChoice:
+    model = parse_nan_value(value)
+    for c in catalog:
+        if c.is_nan and c.hf_id == model:
+            return c
+    # Modelo no listado aún (prefs antiguos / id nuevo): entrada ad-hoc.
+    if value == NAN_VALUE:
         for c in catalog:
-            if c.is_ollama and c.hf_id == tag:
+            if c.is_nan:
                 return c
-        # Tag no listado aún (prefs antiguos / modelo nuevo): entrada ad-hoc
-        if value == OLLAMA_VALUE:
-            return preferred_choice(catalog)
-        return ollama_choice(tag)
+    return nan_choice(model)
+
+
+def _resolve_ollama(value: str, catalog: list[VlModelChoice]) -> VlModelChoice:
+    tag = parse_ollama_value(value)
+    for c in catalog:
+        if c.is_ollama and c.hf_id == tag:
+            return c
+    # Tag no listado aún (prefs antiguos / modelo nuevo): entrada ad-hoc.
+    if value == OLLAMA_VALUE:
+        return preferred_choice(catalog)
+    return ollama_choice(tag)
+
+
+def _resolve_local(value: str, catalog: list[VlModelChoice]) -> VlModelChoice:
     for c in catalog:
         if c.value == value or c.hf_id == value or value in (c.local_path, f"hf:{c.hf_id}"):
             return c
@@ -280,3 +410,21 @@ def choice_by_value(value: str, catalog: list[VlModelChoice] | None = None) -> V
         ):
             return c
     return preferred_choice(catalog)
+
+
+# (predicado, resolvedor): despacho table-driven por prefijo del valor.
+_CHOICE_RESOLVERS = (
+    (is_nan_value, _resolve_nan),
+    (is_ollama_value, _resolve_ollama),
+)
+
+
+def choice_by_value(value: str, catalog: list[VlModelChoice] | None = None) -> VlModelChoice | None:
+    catalog = catalog if catalog is not None else list_vl_models()
+    value = (value or "").strip()
+    if not value:
+        return preferred_choice(catalog)
+    for matches, resolve in _CHOICE_RESOLVERS:
+        if matches(value):
+            return resolve(value, catalog)
+    return _resolve_local(value, catalog)
