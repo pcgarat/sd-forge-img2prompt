@@ -3,6 +3,15 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
+from forge_img2prompt.nan_settings import (
+    DEFAULT_NAN_MODEL,
+    NAN_VALUE,
+    get_nan_config,
+    is_nan_value,
+    parse_nan_value,
+    vision_label,
+    vision_risk,
+)
 from forge_img2prompt.ollama_settings import (
     DEFAULT_OLLAMA_MODEL,
     OLLAMA_VALUE,
@@ -73,6 +82,9 @@ class VlModelChoice:
 
     @property
     def value(self) -> str:
+        if self.kind == "nan":
+            model = (self.hf_id or "").strip()
+            return f"nan:{model}" if model else NAN_VALUE
         if self.kind == "ollama":
             tag = (self.hf_id or "").strip() or DEFAULT_OLLAMA_MODEL
             return f"ollama:{tag}"
@@ -86,6 +98,15 @@ class VlModelChoice:
     @property
     def is_ollama(self) -> bool:
         return self.kind == "ollama"
+
+    @property
+    def is_nan(self) -> bool:
+        return self.kind == "nan"
+
+    @property
+    def is_remote(self) -> bool:
+        """Backend API/servicio (sin descarga HF ni VRAM en el proceso Forge)."""
+        return self.kind in ("ollama", "nan")
 
 
 def text_encoder_root() -> Path:
@@ -218,9 +239,54 @@ def ollama_choices() -> list[VlModelChoice]:
     return out
 
 
+def _nan_choice_for(model: str, *, recommended: bool = False) -> VlModelChoice:
+    model = (model or "").strip() or DEFAULT_NAN_MODEL
+    risk = vision_risk(model)
+    risk_note = " · ⚠ tier premium" if risk == "premium" else ""
+    stars = "★ " if recommended else ""
+    return VlModelChoice(
+        label=f"{stars}NaN · {vision_label(model)}{risk_note} · sin VRAM Forge",
+        local_path="",
+        hf_id=model,
+        kind="nan",
+        caption_ready=True,
+        recommended=recommended,
+        risk=risk,
+    )
+
+
+def nan_choice(model: str | None = None) -> VlModelChoice:
+    """Una entrada NaN (compat). Sin modelo → default."""
+    return _nan_choice_for(
+        model or DEFAULT_NAN_MODEL,
+        recommended=(model or DEFAULT_NAN_MODEL) == DEFAULT_NAN_MODEL,
+    )
+
+
+def nan_choices() -> list[VlModelChoice]:
+    """Entradas NaN con visión (descubrimiento /v1/models o catálogo curado)."""
+    from forge_img2prompt.nan_client import list_vision_models
+
+    models = list_vision_models(get_nan_config())
+    if not models:
+        models = [DEFAULT_NAN_MODEL]
+    return [
+        _nan_choice_for(
+            model,
+            recommended=model == DEFAULT_NAN_MODEL
+            or (i == 0 and DEFAULT_NAN_MODEL not in models),
+        )
+        for i, model in enumerate(models)
+    ]
+
+
 def list_vl_models(extra_dirs=None) -> list[VlModelChoice]:
     del extra_dirs
-    return [*ollama_choices(), *(_choice_from_spec(s) for s in VL_SPECS)]
+    return [
+        *nan_choices(),
+        *ollama_choices(),
+        *(_choice_from_spec(s) for s in VL_SPECS),
+    ]
 
 
 def dropdown_choices(catalog: list[VlModelChoice] | None = None) -> list[tuple[str, str]]:
@@ -240,6 +306,13 @@ def preferred_choice(catalog: list[VlModelChoice] | None = None) -> VlModelChoic
             return c
     for c in catalog:
         if c.is_ollama:
+            return c
+    # NaN (clúster comunitario): preferido cuando no hay Ollama configurado.
+    for c in catalog:
+        if c.is_nan and c.hf_id == DEFAULT_NAN_MODEL:
+            return c
+    for c in catalog:
+        if c.is_nan:
             return c
     for c in catalog:
         if c.recommended and c.local_path and is_local_ready(Path(c.local_path)):
@@ -262,6 +335,17 @@ def choice_by_value(value: str, catalog: list[VlModelChoice] | None = None) -> V
     value = (value or "").strip()
     if not value:
         return preferred_choice(catalog)
+    if is_nan_value(value):
+        model = parse_nan_value(value)
+        for c in catalog:
+            if c.is_nan and c.hf_id == model:
+                return c
+        # Modelo no listado aún (prefs antiguos / id nuevo): entrada ad-hoc
+        if value == NAN_VALUE:
+            for c in catalog:
+                if c.is_nan:
+                    return c
+        return nan_choice(model)
     if is_ollama_value(value):
         tag = parse_ollama_value(value)
         for c in catalog:

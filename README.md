@@ -23,7 +23,7 @@ Reproducir o reinterpretar una imagen no debería empezar desde cero en un cuadr
 | Prompts genéricos o en estilo booru | Caption en **prosa**, calibrada al stack detectado |
 | Settings de sampler a ciegas | **Hints** según Krea 2 (Turbo / RAW) o FLUX.2 Klein 9B (distilled / base) |
 | Detalle local perdido en el caption global | **Máscara** → análisis de zona → campo aparte |
-| VRAM disputada | Backend **Ollama** fuera del proceso Forge (recomendado) |
+| VRAM disputada | Backend **NaN** (clúster) o **Ollama** fuera del proceso Forge |
 
 ---
 
@@ -59,7 +59,7 @@ flowchart LR
 
 ## Proveedores de visión
 
-La extensión no acopla el caption al text encoder del stack de generación. Usa un **modelo de visión** aparte, elegible en el dropdown, con tres caminos:
+La extensión no acopla el caption al text encoder del stack de generación. Usa un **modelo de visión** aparte, elegible en el dropdown, con cuatro caminos:
 
 ```mermaid
 flowchart TB
@@ -67,13 +67,24 @@ flowchart TB
   UI --> Comp[CompositeProvider]
 
   Comp -->|sin imagen| Stub[Stub · solo notas]
+  Comp -->|nan:modelo| Nan[NaN · /v1/chat/completions + image_url]
   Comp -->|ollama:tag| Ollama[Ollama · /api/chat + images]
   Comp -->|ruta HF local| HF[Transformers · Qwen3-VL en disco]
 
-  Ollama --> Out[PromptResult]
+  Nan --> Out[PromptResult]
+  Ollama --> Out
   HF --> Out
   Stub --> Out
 ```
+
+### NaN — clúster comunitario de modelos abiertos
+
+- API **compatible con OpenAI** (`https://api.nan.builders/v1`); no consume tu VRAM.
+- Modelos de visión potentes del clúster: DeepSeek V4 Flash (305B), GLM 5.3 Flash,
+  Qwen 3.8 Flash, MiMo V2.6, Gemma 4, Qwen 3.6 y GLM 5.3 (tier premium).
+- Lista viva vía `GET /v1/models`; botón ↻ para refrescar sin reiniciar Forge.
+- Conexión en **Settings → Image → Prompt / NaN** (URL, API key, timeout);
+  también lee `NAN_API_KEY` / `NAN_BASE_URL` del entorno.
 
 ### Ollama — recomendado en producción local
 
@@ -96,6 +107,11 @@ Ideal cuando Forge y Ollama coexisten (incluido Docker en el host con gateway `1
 
 ```mermaid
 flowchart LR
+  subgraph nan_path [NaN]
+    Models["/v1/models"] --> DDN[Dropdown pestaña]
+    DDN --> NanChat["POST /chat/completions + image_url"]
+  end
+
   subgraph ollama_path [Ollama]
     Tags["/api/tags · vision"] --> DD[Dropdown pestaña]
     DD --> Chat["POST /api/chat + images"]
@@ -107,7 +123,8 @@ flowchart LR
     Gen --> Unload[Libera VRAM]
   end
 
-  Settings[Settings · URL · key · timeout] -.-> Chat
+  SettingsNaN[Settings NaN · URL · key · timeout] -.-> NanChat
+  Settings[Settings Ollama · URL · key · timeout] -.-> Chat
 ```
 
 ---
@@ -160,6 +177,15 @@ git clone https://github.com/pcgarat/sd-forge-img2prompt.git \
 
 Reinicia Forge Neo.
 
+### NaN
+
+1. Genera tu API key en `cloud.nan.builders` → **API Keys** (empieza por `sk-`).
+2. En **Settings → Image → Prompt / NaN**: URL `https://api.nan.builders/v1`, pega la key.
+3. En la pestaña, elige en el dropdown el modelo NaN que quieras (default
+   `deepseek-v4-flash`) y pulsa Generate.
+
+Opcional: define `NAN_API_KEY` (y `NAN_BASE_URL`) en el entorno como alternativa.
+
 ### Ollama + Docker
 
 Si Forge corre en contenedor y Ollama en el host:
@@ -178,6 +204,7 @@ Si Forge corre en contenedor y Ollama en el host:
 | [Documentación extendida](docs/guia_desarrollador_img2prompt_26-09-2026.md) | Arquitectura, flujos, contratos UI ↔ providers |
 | [Spec producto](docs/spec-forge-neo-img2prompt_25-09-2026.md) | Alcance y criterios de aceptación |
 | [Spec backend Ollama](docs/spec-ollama-backend_26-09-2026.md) | API nativa `/api/chat` + visión |
+| [Spec backend NaN](docs/spec-nan-backend_09-10-2026.md) | API OpenAI-compatible del clúster NaN |
 
 ---
 

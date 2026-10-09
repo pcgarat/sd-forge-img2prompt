@@ -18,29 +18,101 @@ def _fake_vision_tags():
     return ["qwen3-vl:8b-instruct", "kimi-k3:cloud", "gemma4:31b-cloud"]
 
 
-def test_catalog_has_ollama_vision_and_hf():
-    with patch(
-        "forge_img2prompt.ollama_client.list_vision_models",
-        return_value=_fake_vision_tags(),
+def _fake_nan_models():
+    return ["deepseek-v4-flash", "glm5.3-flash", "qwen3.8-flash"]
+
+
+def test_catalog_has_nan_ollama_vision_and_hf():
+    with (
+        patch(
+            "forge_img2prompt.ollama_client.list_vision_models",
+            return_value=_fake_vision_tags(),
+        ),
+        patch(
+            "forge_img2prompt.nan_client.list_vision_models",
+            return_value=_fake_nan_models(),
+        ),
     ):
         catalog = list_vl_models()
+    nan = [c for c in catalog if c.is_nan]
     ollama = [c for c in catalog if c.is_ollama]
+    assert len(nan) == 3
     assert len(ollama) == 3
-    assert len(catalog) == 3 + len(VL_SPECS)
-    assert catalog[0].is_ollama
-    assert catalog[0].value == "ollama:qwen3-vl:8b-instruct"
+    assert len(catalog) == 3 + 3 + len(VL_SPECS)
+    # NaN primero en el dropdown.
+    assert catalog[0].is_nan
+    assert catalog[0].value == "nan:deepseek-v4-flash"
     ids = {c.hf_id for c in catalog}
     assert "huihui-ai/Huihui-Qwen3-VL-2B-Instruct-abliterated" in ids
     assert "Qwen/Qwen3-VL-2B-Instruct" in ids
     assert "huihui-ai/Huihui-Qwen3-VL-4B-Instruct-abliterated" in ids
-    assert preferred_choice(catalog).is_ollama
-    assert preferred_choice(catalog).hf_id == "qwen3-vl:8b-instruct"
-    assert preferred_choice(catalog).recommended
-    assert sole_model_choice().is_ollama
     pairs = dropdown_choices(catalog)
-    assert len(pairs) == 3 + len(VL_SPECS)
-    assert preferred_value(catalog) == "ollama:qwen3-vl:8b-instruct"
+    assert len(pairs) == 3 + 3 + len(VL_SPECS)
     assert DEFAULT_HF_ID == "huihui-ai/Huihui-Qwen3-VL-2B-Instruct-abliterated"
+
+
+def test_preferred_prefers_ollama_default_over_nan():
+    with (
+        patch(
+            "forge_img2prompt.ollama_client.list_vision_models",
+            return_value=_fake_vision_tags(),
+        ),
+        patch(
+            "forge_img2prompt.nan_client.list_vision_models",
+            return_value=_fake_nan_models(),
+        ),
+    ):
+        catalog = list_vl_models()
+    pref = preferred_choice(catalog)
+    assert pref.is_ollama
+    assert pref.hf_id == "qwen3-vl:8b-instruct"
+    assert preferred_value(catalog) == "ollama:qwen3-vl:8b-instruct"
+    assert sole_model_choice().is_ollama
+
+
+def test_preferred_choice_nan_only_catalog():
+    # Catálogo sin Ollama (p. ej. preferencia forzada): NaN default gana.
+    from forge_img2prompt.vl_catalog import _nan_choice_for
+
+    catalog = [_nan_choice_for("glm5.3-flash"), _nan_choice_for("deepseek-v4-flash")]
+    pref = preferred_choice(catalog)
+    assert pref.is_nan
+    assert pref.hf_id == "deepseek-v4-flash"
+    assert preferred_value(catalog) == "nan:deepseek-v4-flash"
+
+
+def test_choice_by_value_nan():
+    with (
+        patch(
+            "forge_img2prompt.ollama_client.list_vision_models",
+            return_value=[],
+        ),
+        patch(
+            "forge_img2prompt.nan_client.list_vision_models",
+            return_value=_fake_nan_models(),
+        ),
+    ):
+        catalog = list_vl_models()
+    c = choice_by_value("nan:glm5.3-flash", catalog)
+    assert c is not None and c.is_nan and c.hf_id == "glm5.3-flash"
+    assert not c.is_ollama and not c.is_uncensored
+    assert c.is_remote
+    assert c.risk == ""
+    # id de modelo suelto (prefs antiguos)
+    assert choice_by_value("nan:qwen3.8-flash", catalog).hf_id == "qwen3.8-flash"
+    # modelo no listado → entrada ad-hoc, sin reventar
+    adhoc = choice_by_value("nan:modelo-nuevo", catalog)
+    assert adhoc is not None and adhoc.is_nan and adhoc.hf_id == "modelo-nuevo"
+    # valor vacío del sufijo → default
+    assert choice_by_value("nan:", catalog).hf_id == "deepseek-v4-flash"
+    # tier premium marcado
+    with patch(
+        "forge_img2prompt.nan_client.list_vision_models",
+        return_value=[*_fake_nan_models(), "glm5.3"],
+    ):
+        cat2 = list_vl_models()
+    prem = choice_by_value("nan:glm5.3", cat2)
+    assert prem is not None and prem.risk == "premium"
 
 
 def test_choice_by_value_ollama_and_uncensored():

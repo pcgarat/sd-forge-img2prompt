@@ -46,6 +46,8 @@ from forge_img2prompt.provider import (
     normalize_ref_slots,
 )
 from forge_img2prompt.stack import detect_stack, pick_text_encoder
+from forge_img2prompt.nan_client import ping_models
+from forge_img2prompt.nan_settings import get_nan_config, register_nan_settings
 from forge_img2prompt.ollama_client import ping_tags
 from forge_img2prompt.ollama_settings import get_ollama_config, register_ollama_settings
 from forge_img2prompt.vl_catalog import (
@@ -133,6 +135,24 @@ def _refresh_stack():
 def _plan_for_value(vl_value: str) -> str:
     choice = choice_by_value(vl_value, _CATALOG)
     assert choice is not None
+    if choice.is_nan:
+        cfg = get_nan_config(model=choice.hf_id)
+        ok, msg = ping_models(cfg)
+        mark = "OK" if ok else "aviso"
+        key_state = "sí" if cfg.api_key else "no"
+        tier = " · tier premium (GLM 5.3)" if choice.risk == "premium" else ""
+        return (
+            f"### Backend NaN ({mark})\n\n"
+            f"- URL: `{cfg.base_url}`\n"
+            f"- Modelo: `{choice.hf_id}`{tier}\n"
+            f"- API key: {key_state}\n"
+            f"- Timeout: {cfg.timeout:.0f}s\n\n"
+            f"{msg}\n\n"
+            "Clúster comunitario de modelos abiertos (UE, sin logs). "
+            "Conexión en **Settings → Image → Prompt / NaN** (URL, API key, timeout). "
+            "El modelo se elige en este dropdown. "
+            "NaN no usa tu VRAM: el caption corre en el clúster."
+        )
     if choice.is_ollama:
         cfg = get_ollama_config(model=choice.hf_id)
         ok, msg = ping_tags(cfg)
@@ -208,12 +228,14 @@ def on_ui_tabs():
     with gr.Blocks(analytics_enabled=False) as ui:
         gr.Markdown(
             "## Image → Prompt (Krea 2 / Klein 9B)\n"
-            "Caption con **Ollama** (modelos con visión del dropdown; "
-            "sin pelear VRAM con Forge) o **Qwen3-VL** transformers en disco.\n\n"
-            "Ollama: elige el modelo aquí; conexión en "
-            "**Settings → Image → Prompt / Ollama** (URL, API key, timeout). "
+            "Caption con **NaN** (clúster comunitario, API OpenAI-compatible, sin "
+            "VRAM Forge), **Ollama** (modelos con visión; sin pelear VRAM) o "
+            "**Qwen3-VL** transformers en disco.\n\n"
+            "NaN: conexión en **Settings → Image → Prompt / NaN** (URL, API key). "
+            "Ollama: conexión en **Settings → Image → Prompt / Ollama** "
+            "(URL, API key, timeout). El modelo se elige aquí, en el dropdown.\n\n"
             "Transformers: en 8 GB elige **Huihui 2B**; el **4B** puede OOM.\n\n"
-            "Sin imagen → escribe en **Notas** el brief; el modelo VL/Ollama "
+            "Sin imagen → escribe en **Notas** el brief; el modelo VL/API "
             "lo amplía a un prompt con detalles (refs foto 1–3 opcionales). "
             "Tras Generate, pinta una **máscara** (pincel magenta) sobre la zona "
             "y pulsa **Añadir detalle**: se analiza **solo lo pintado** "
@@ -463,7 +485,7 @@ def on_ui_tabs():
                 plan,
             )
 
-            if img is not None and not choice.is_ollama:
+            if img is not None and not choice.is_remote:
                 dest = Path(choice.local_path)
                 dest.mkdir(parents=True, exist_ok=True)
                 if not is_local_ready(dest):
@@ -618,7 +640,7 @@ def on_ui_tabs():
                 "",
             )
 
-            if not choice.is_ollama:
+            if not choice.is_remote:
                 dest = Path(choice.local_path)
                 dest.mkdir(parents=True, exist_ok=True)
                 if not is_local_ready(dest):
@@ -814,4 +836,5 @@ def on_ui_tabs():
 
 script_callbacks.on_ui_tabs(on_ui_tabs)
 script_callbacks.on_ui_settings(register_ollama_settings)
-log("callback on_ui_tabs + on_ui_settings (Ollama) registrados")
+script_callbacks.on_ui_settings(register_nan_settings)
+log("callback on_ui_tabs + on_ui_settings (Ollama + NaN) registrados")

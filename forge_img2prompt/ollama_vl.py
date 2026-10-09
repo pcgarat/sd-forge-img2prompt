@@ -1,4 +1,4 @@
-"""Caption / detalle vía Ollama local (sin cargar VL en el proceso Forge)."""
+"""Caption / detalle vía backend OpenAI/Ollama (sin cargar VL en el proceso Forge)."""
 
 from __future__ import annotations
 
@@ -6,7 +6,7 @@ from typing import Callable
 
 from forge_img2prompt.log import log
 from forge_img2prompt.ollama_client import chat_with_image
-from forge_img2prompt.ollama_settings import get_ollama_config
+from forge_img2prompt.ollama_settings import OllamaConfig, get_ollama_config
 from forge_img2prompt.provider import (
     DEFAULT_STRATEGY,
     DETAIL_WORDS_BOUNDS,
@@ -56,7 +56,20 @@ ProgressCb = Callable[[float, str], None]
 
 
 class OllamaVLProvider:
-    """Generate/detail usando Ollama /api/chat + images (como chatBot + visión)."""
+    """Generate/detail vía backend remoto OpenAI-compatible (Ollama / NaN).
+
+    Ollama habla su API nativa ``/api/chat`` + campo ``images``; NaN habla
+    ``/chat/completions`` + ``image_url``. Toda la lógica de prompts, rangos,
+    refs y filtros post-VL es idéntica: ``NanVLProvider`` solo cambia la
+    etiqueta, la config y el transporte ``_run``.
+    """
+
+    backend_label = "Ollama"
+
+    # --- Puntos de extensión -------------------------------------------------
+
+    def _config(self, model: str | None) -> OllamaConfig:
+        return get_ollama_config(model=model)
 
     def _run(
         self,
@@ -67,7 +80,7 @@ class OllamaVLProvider:
         max_new_tokens: int,
         model: str | None = None,
     ) -> str:
-        cfg = get_ollama_config(model=model)
+        cfg = self._config(model)
         return chat_with_image(
             cfg,
             system=system,
@@ -75,6 +88,18 @@ class OllamaVLProvider:
             image=image,
             num_predict=max_new_tokens,
         )
+
+    def _status_note(self, cfg: OllamaConfig, choice: VlModelChoice) -> str:
+        return (
+            f"`{cfg.model}` @ `{cfg.base_url}` · {self.backend_label} · "
+            f"VRAM Forge intacta (VL en {self.backend_label}; "
+            "keep_alive=0 → descarga tras caption)."
+        )
+
+    def _error_hint(self, exc: Exception, cfg: OllamaConfig, choice: VlModelChoice) -> str:
+        return f"({exc})"
+
+    # --- Prompts (idénticos en ambos backends) -------------------------------
 
     def _caption(
         self,
@@ -241,7 +266,7 @@ class OllamaVLProvider:
     ) -> PromptResult:
         stack = request.stack
         hints = _sampler_hints(stack.family, stack.variant)
-        cfg = get_ollama_config(model=choice.hf_id)
+        cfg = self._config(choice.hf_id)
 
         def report(frac: float, desc: str) -> None:
             log(desc)
@@ -276,10 +301,11 @@ class OllamaVLProvider:
         )
         prompt = ""
         notes_only = request.image is None
+        backend = self.backend_label
         try:
-            report(0.15, f"Ollama `{cfg.model}` en {cfg.base_url}…")
+            report(0.15, f"{backend} `{cfg.model}` en {cfg.base_url}…")
             if notes_only:
-                report(0.4, "Expandiendo notas a prompt (Ollama)…")
+                report(0.4, f"Expandiendo notas a prompt ({backend})…")
                 prompt = self._from_notes(
                     request.user_notes,
                     stack.family,
@@ -292,7 +318,7 @@ class OllamaVLProvider:
                     ref_slots=request.ref_slots,
                 )
             else:
-                report(0.4, "Generando caption (Ollama)…")
+                report(0.4, f"Generando caption ({backend})…")
                 prompt = self._caption(
                     request.image,
                     request.user_notes,
@@ -305,14 +331,14 @@ class OllamaVLProvider:
                     model=choice.hf_id,
                     ref_slots=request.ref_slots,
                 )
-            report(1.0, "Caption Ollama listo")
+            report(1.0, f"Caption {backend} listo")
         except Exception as exc:  # noqa: BLE001
-            log(f"ERROR Ollama VL: {exc}")
+            log(f"ERROR {backend} VL: {exc}")
             return PromptResult(
                 prompt="",
                 negative_hint="",
                 sampler_hints=hints,
-                status=f"Error Ollama (`{cfg.model}` @ `{cfg.base_url}`): {exc}",
+                status=f"Error {backend}: {self._error_hint(exc, cfg, choice)}",
             )
 
         if not prompt:
@@ -320,7 +346,7 @@ class OllamaVLProvider:
                 prompt="",
                 negative_hint="",
                 sampler_hints=hints,
-                status=f"Ollama `{cfg.model}` devolvió vacío.",
+                status=f"{backend} `{cfg.model}` devolvió vacío.",
             )
 
         raw_words = count_words(prompt)
@@ -341,11 +367,10 @@ class OllamaVLProvider:
             negative_hint=_negative_hint(stack.family, stack.variant),
             sampler_hints=hints,
             status=(
-                f"Ollama {label} ({stack.variant}) · `{cfg.model}` "
-                f"@ `{cfg.base_url}` · {mode} · estrategia={strat_label} · "
-                f"idioma={lang_label} · "
-                f"{n_words} palabras (rango {wmin}–{wmax}){range_note}. "
-                "VRAM Forge intacta (VL en Ollama; keep_alive=0 → descarga tras caption)."
+                f"{backend} {label} ({stack.variant}) · "
+                f"{self._status_note(cfg, choice)} · {mode} · "
+                f"estrategia={strat_label} · idioma={lang_label} · "
+                f"{n_words} palabras (rango {wmin}–{wmax}){range_note}."
             ),
         )
 
@@ -359,7 +384,8 @@ class OllamaVLProvider:
         stack = request.stack
         hints = _sampler_hints(stack.family, stack.variant)
         base = (request.base_prompt or "").strip()
-        cfg = get_ollama_config(model=choice.hf_id)
+        cfg = self._config(choice.hf_id)
+        backend = self.backend_label
 
         def report(frac: float, desc: str) -> None:
             log(desc)
@@ -398,9 +424,9 @@ class OllamaVLProvider:
         fragment = ""
         anchor = ""
         try:
-            report(0.2, f"Ollama detalle `{cfg.model}`…")
+            report(0.2, f"{backend} detalle `{cfg.model}`…")
             ctx = scene_context_snippet(base)
-            report(0.45, "Identificando zona (Ollama)…")
+            report(0.45, f"Identificando zona ({backend})…")
             anchor = self._identify_zone(
                 request.crop,
                 ctx,
@@ -408,8 +434,8 @@ class OllamaVLProvider:
                 uncensored=choice.is_uncensored,
                 model=choice.hf_id,
             )
-            log(f"detalle Ollama: ancla={anchor or '∅'}")
-            report(0.75, "Generando detalle (Ollama)…")
+            log(f"detalle {backend}: ancla={anchor or '∅'}")
+            report(0.75, f"Generando detalle ({backend})…")
             fragment = self._caption_detail(
                 request.crop,
                 request.user_notes,
@@ -421,14 +447,14 @@ class OllamaVLProvider:
                 model=choice.hf_id,
                 ref_slots=request.ref_slots,
             )
-            report(1.0, "Detalle Ollama listo")
+            report(1.0, f"Detalle {backend} listo")
         except Exception as exc:  # noqa: BLE001
-            log(f"ERROR Ollama detail: {exc}")
+            log(f"ERROR {backend} detail: {exc}")
             return PromptResult(
                 prompt=base,
                 negative_hint="",
                 sampler_hints=hints,
-                status=f"Error Ollama detalle (`{cfg.model}`): {exc}",
+                status=f"Error {backend} detalle: {self._error_hint(exc, cfg, choice)}",
             )
 
         if not fragment:
@@ -436,7 +462,7 @@ class OllamaVLProvider:
                 prompt=base,
                 negative_hint="",
                 sampler_hints=hints,
-                status=f"Ollama `{cfg.model}` devolvió detalle vacío; prompt sin cambios.",
+                status=f"{backend} `{cfg.model}` devolvió detalle vacío; prompt sin cambios.",
             )
 
         if overlap_max > 0 and detail_looks_like_tag_soup(fragment):
@@ -445,7 +471,7 @@ class OllamaVLProvider:
                 negative_hint="",
                 sampler_hints=hints,
                 status=(
-                    f"Ollama `{cfg.model}` devolvió tags en lugar de lenguaje natural; "
+                    f"{backend} `{cfg.model}` devolvió tags en lugar de lenguaje natural; "
                     "no se añadió. Reintenta o umbral de descarte a 0."
                 ),
                 fragment="",
@@ -458,7 +484,7 @@ class OllamaVLProvider:
                 negative_hint="",
                 sampler_hints=hints,
                 status=(
-                    f"Ollama `{cfg.model}`: detalle con {shared} palabras coincidentes "
+                    f"{backend} `{cfg.model}`: detalle con {shared} palabras coincidentes "
                     f"(umbral {overlap_max}); no se añadió."
                 ),
                 fragment="",
@@ -470,7 +496,7 @@ class OllamaVLProvider:
                 negative_hint="",
                 sampler_hints=hints,
                 status=(
-                    f"Ollama `{cfg.model}` inventó una escena completa; "
+                    f"{backend} `{cfg.model}` inventó una escena completa; "
                     "detalle descartado."
                 ),
                 fragment="",
@@ -490,10 +516,57 @@ class OllamaVLProvider:
             negative_hint=_negative_hint(stack.family, stack.variant),
             sampler_hints=hints,
             status=(
-                f"Detalle Ollama {label} ({stack.variant}) · `{cfg.model}` "
-                f"@ `{cfg.base_url}` · idioma={lang_label}{anchor_note} · "
+                f"Detalle {backend} {label} ({stack.variant}) · "
+                f"`{cfg.model}` @ `{cfg.base_url}` · idioma={lang_label}{anchor_note} · "
                 f"{n_words} palabras (rango {wmin}–{wmax}){range_note}. "
                 "Prompt general sin cambios; texto en «Prompt de la zona»."
             ),
             fragment=zone,
         )
+
+
+class NanVLProvider(OllamaVLProvider):
+    """Mismo flujo que Ollama sobre la API OpenAI-compatible de NaN (nan.builders).
+
+    Solo cambian el transporte (``/chat/completions`` + ``image_url``) y la
+    config (base URL / key / timeout propios en Settings).
+    """
+
+    backend_label = "NaN"
+
+    def _config(self, model: str | None) -> OllamaConfig:
+        from forge_img2prompt.nan_settings import get_nan_config
+
+        return get_nan_config(model=model)
+
+    def _run(
+        self,
+        image,
+        system: str,
+        user_text: str,
+        *,
+        max_new_tokens: int,
+        model: str | None = None,
+    ) -> str:
+        from forge_img2prompt.nan_client import chat_with_image as nan_chat
+
+        cfg = self._config(model)
+        return nan_chat(
+            cfg,
+            system=system,
+            user_text=user_text,
+            image=image,
+            max_tokens=max_new_tokens,
+        )
+
+    def _status_note(self, cfg: OllamaConfig, choice: VlModelChoice) -> str:
+        return (
+            f"`{cfg.model}` @ `{cfg.base_url}` · NaN (clúster comunitario, "
+            "UE, sin logs) · cero VRAM Forge."
+        )
+
+    def _error_hint(self, exc: Exception, cfg: OllamaConfig, choice: VlModelChoice) -> str:
+        note = f"(`{cfg.model}` @ `{cfg.base_url}`): {exc}"
+        if choice.risk == "premium":
+            return f"{note}. `{choice.hf_id}` es tier premium de NaN."
+        return note

@@ -1125,14 +1125,21 @@ class QwenVLProvider:
 
 
 class CompositeProvider:
-    """Caption VL/Ollama (imagen o notas); stub solo si no hay nada que enviar."""
+    """Caption VL/Ollama/NaN (imagen o notas); stub solo si no hay nada que enviar."""
 
     def __init__(self) -> None:
         self.stub = StubProvider()
         self.vl = QwenVLProvider()
-        from forge_img2prompt.ollama_vl import OllamaVLProvider
+        from forge_img2prompt.ollama_vl import NanVLProvider, OllamaVLProvider
 
         self.ollama = OllamaVLProvider()
+        self.nan = NanVLProvider()
+
+    @staticmethod
+    def _remote(request: PromptRequest) -> bool:
+        notes = (request.user_notes or "").strip()
+        has_refs = bool(active_ref_pairs(request.ref_slots))
+        return request.image is not None or bool(notes) or has_refs
 
     def generate(
         self,
@@ -1141,12 +1148,12 @@ class CompositeProvider:
         *,
         progress: ProgressCb | None = None,
     ) -> PromptResult:
-        notes = (request.user_notes or "").strip()
-        has_refs = bool(active_ref_pairs(request.ref_slots))
         # Sin imagen: el modelo expande Notas (refs opcionales). Stub solo si vacío.
-        if request.image is not None or notes or has_refs:
+        if self._remote(request):
             choice = choice_by_value(vl_value) if vl_value else choice_by_value("")
             assert choice is not None
+            if choice.is_nan:
+                return self.nan.generate(request, choice, progress=progress)
             if choice.is_ollama:
                 return self.ollama.generate(request, choice, progress=progress)
             return self.vl.generate(request, choice, progress=progress)
@@ -1161,6 +1168,8 @@ class CompositeProvider:
     ) -> PromptResult:
         choice = choice_by_value(vl_value) if vl_value else choice_by_value("")
         assert choice is not None
+        if choice.is_nan:
+            return self.nan.detail(request, choice, progress=progress)
         if choice.is_ollama:
             return self.ollama.detail(request, choice, progress=progress)
         return self.vl.detail(request, choice, progress=progress)
@@ -1170,6 +1179,8 @@ def initial_status_markdown() -> str:
     from forge_img2prompt.vl_catalog import preferred_choice
 
     choice = preferred_choice()
+    if choice.is_nan:
+        return f"Backend **NaN** · modelo `{choice.hf_id}` (API, sin VRAM Forge)."
     if choice.is_ollama:
         return f"Backend **Ollama** · modelo `{choice.hf_id}` (sin VRAM Forge)."
     local = Path(choice.local_path)
