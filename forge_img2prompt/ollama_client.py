@@ -92,6 +92,15 @@ def chat_with_image(
     if cfg.api_key:
         headers["Authorization"] = f"Bearer {cfg.api_key}"
 
+    from forge_img2prompt import prompt_log
+
+    prompt_log.record(
+        transport="Ollama POST /api/chat",
+        payload=prompt_log.redact_images(payload),
+        params={"num_predict": int(num_predict), "temperature": 0.2, "stream": False},
+        images=images,
+    )
+
     log(
         f"Ollama POST {cfg.chat_url} · model={cfg.model} · "
         f"num_predict={num_predict} · images={len(b64_list)}"
