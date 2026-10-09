@@ -138,6 +138,7 @@ def test_inside_out_strategy_prompts():
 def test_normalize_strategy_aliases():
     from forge_img2prompt.provider import (
         STRATEGY_INSIDE_OUT,
+        STRATEGY_LAYERED,
         STRATEGY_PROSE,
         normalize_strategy,
         strategy_label,
@@ -148,8 +149,38 @@ def test_normalize_strategy_aliases():
     assert normalize_strategy("inside_out") == STRATEGY_INSIDE_OUT
     assert normalize_strategy("Dentro → fuera") == STRATEGY_INSIDE_OUT
     assert normalize_strategy("dentro-fuera") == STRATEGY_INSIDE_OUT
+    assert normalize_strategy("layered") == STRATEGY_LAYERED
+    assert normalize_strategy("Capas (sujeto→calidad)") == STRATEGY_LAYERED
+    assert normalize_strategy("capas") == STRATEGY_LAYERED
     assert normalize_strategy("weird") == STRATEGY_PROSE
     assert strategy_label(STRATEGY_INSIDE_OUT) == "Dentro → fuera"
+    assert strategy_label(STRATEGY_LAYERED) == "Capas (sujeto→calidad)"
+
+
+def test_layered_strategy_prompts():
+    from forge_img2prompt.provider import STRATEGY_LAYERED
+    from forge_img2prompt.vl_provider import (
+        _build_user_text,
+        _caption_system_for,
+        _strategy_user_hint,
+    )
+
+    sys_low = _caption_system_for(STRATEGY_LAYERED).lower()
+    assert "layer 1" in sys_low and "subject" in sys_low
+    assert "composition" in sys_low
+    assert "masterpiece" in sys_low
+    assert "weight" in sys_low or "(word:1.5)" in sys_low
+    hint = _strategy_user_hint(STRATEGY_LAYERED).lower()
+    assert "subject" in hint and "style" in hint
+    user = _build_user_text(
+        "prioridad producto",
+        "krea2",
+        LANG_ES,
+        strategy=STRATEGY_LAYERED,
+        word_min=40,
+        word_max=80,
+    ).lower()
+    assert "layer" in user or "subject" in user
 
 
 def test_family_hint_has_no_length():
