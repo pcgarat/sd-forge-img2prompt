@@ -20,6 +20,36 @@ from forge_img2prompt.nan_settings import (
 MAX_RESPONSE_BYTES = 8_000_000
 MAX_ERROR_BYTES = 2000
 
+# Cloudflare (delante de api.nan.builders) bloquea el User-Agent por defecto de
+# urllib ("Python-urllib/3.x") con 403 «error code: 1010». Enviamos uno propio y
+# nítido para evitar que se confunda con tráfico automatizado sospechoso.
+USER_AGENT = "sd-forge-img2prompt/1.0 (+nan.builders)"
+
+
+def _base_headers(cfg: NanConfig) -> dict[str, str]:
+    """Cabeceras comunes; añade Bearer solo si hay key configurada."""
+    headers = {"User-Agent": USER_AGENT}
+    if cfg.api_key:
+        headers["Authorization"] = f"Bearer {cfg.api_key}"
+    return headers
+
+
+def _http_hint(code: int) -> str:
+    """Pista accionable para los códigos que NaN devuelve con más frecuencia."""
+    if code in (401, 403):
+        return (
+            " · Revisa la API key en Settings → Image → Prompt / NaN "
+            "(y que el modelo elegido esté en tu plan: el tier premium `glm5.3` "
+            "no va con las keys gratuitas)."
+        )
+    if code == 402:
+        return " · Cuota agotada para tu key o modelo; cambia de modelo o espera al reinicio."
+    if code == 429:
+        return " · Demasiadas peticiones; reintenta en unos segundos."
+    if code == 404:
+        return " · Modelo o endpoint inexistente; refresca el catálogo (↻) en la pestaña."
+    return ""
+
 
 class _NoRedirect(urllib.request.HTTPRedirectHandler):
     """No seguir 3xx: evita reenviar el Bearer a otro host en un redirect."""
@@ -103,9 +133,8 @@ def chat_with_image(
         "reasoning_effort": "none",
     }
     body = json.dumps(payload).encode("utf-8")
-    headers = {"Content-Type": "application/json"}
-    if cfg.api_key:
-        headers["Authorization"] = f"Bearer {cfg.api_key}"
+    headers = _base_headers(cfg)
+    headers["Content-Type"] = "application/json"
 
     from forge_img2prompt import prompt_log
 
@@ -137,6 +166,7 @@ def chat_with_image(
             detail = str(exc.reason)
         raise RuntimeError(
             f"NaN HTTP {exc.code} en {cfg.chat_url}: {detail or exc.reason}"
+            f"{_http_hint(exc.code)}"
         ) from exc
     except urllib.error.URLError as exc:
         raise RuntimeError(
@@ -169,9 +199,7 @@ def chat_with_image(
 
 
 def _fetch_models_payload(cfg: NanConfig) -> list[str] | None:
-    headers = {}
-    if cfg.api_key:
-        headers["Authorization"] = f"Bearer {cfg.api_key}"
+    headers = _base_headers(cfg)
     req = urllib.request.Request(cfg.models_url, headers=headers, method="GET")
     try:
         with _open(req, timeout=min(10.0, cfg.timeout)) as resp:

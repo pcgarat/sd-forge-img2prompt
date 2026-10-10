@@ -123,6 +123,7 @@ def test_chat_with_image_builds_openai_payload():
         captured["auth"] = req.headers.get("Authorization") or req.get_header(
             "Authorization"
         )
+        captured["ua"] = req.headers.get("User-agent") or req.get_header("User-agent")
         captured["body"] = json.loads(req.data.decode())
         return _Resp({"choices": [{"message": {"role": "assistant", "content": "  Un square rojo.  "}}]})
 
@@ -137,6 +138,11 @@ def test_chat_with_image_builds_openai_payload():
     assert text == "Un square rojo."
     assert captured["url"].endswith("/v1/chat/completions")
     assert captured["auth"] == "Bearer sk-test"
+    # Cloudflare rechaza el UA por defecto de urllib con 403 (error 1010).
+    from forge_img2prompt.nan_client import USER_AGENT
+
+    assert captured["ua"] == USER_AGENT
+    assert "Python-urllib" not in captured["ua"]
     body = captured["body"]
     assert body["model"] == "deepseek-v4-flash"
     assert body["stream"] is False
@@ -189,6 +195,42 @@ def test_chat_http_error_reports_code():
     with patch("forge_img2prompt.nan_client._open", boom):
         with pytest.raises(RuntimeError, match="NaN HTTP 402"):
             chat_with_image(_cfg(), system="", user_text="hi")
+
+
+def test_http_403_message_includes_key_hint():
+    import urllib.error
+
+    def boom(*a, **k):
+        raise urllib.error.HTTPError(
+            url="https://api.nan.builders/v1/chat/completions",
+            code=403,
+            msg="Forbidden",
+            hdrs=None,
+            fp=None,
+        )
+
+    with patch("forge_img2prompt.nan_client._open", boom):
+        with pytest.raises(RuntimeError, match="Revisa la API key"):
+            chat_with_image(_cfg(), system="", user_text="hi")
+
+
+def test_fetch_models_sends_user_agent_and_auth():
+    from forge_img2prompt.nan_client import USER_AGENT, _fetch_models_payload
+
+    captured: dict = {}
+
+    def fake_urlopen(req, timeout=None):
+        captured["ua"] = req.headers.get("User-agent") or req.get_header("User-agent")
+        captured["auth"] = req.headers.get("Authorization") or req.get_header(
+            "Authorization"
+        )
+        return _Resp({"data": [{"id": "deepseek-v4-flash"}]})
+
+    with patch("forge_img2prompt.nan_client._open", fake_urlopen):
+        ids = _fetch_models_payload(_cfg())
+    assert ids == ["deepseek-v4-flash"]
+    assert captured["ua"] == USER_AGENT
+    assert captured["auth"] == "Bearer sk-test"
 
 
 def test_list_vision_models_filters_against_curated():
