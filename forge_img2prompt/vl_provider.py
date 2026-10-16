@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import gc
+from dataclasses import replace
 from pathlib import Path
 from typing import Any, Callable
 
@@ -9,6 +10,12 @@ from PIL import Image
 
 from forge_img2prompt.log import log
 from forge_img2prompt import prompt_log
+from forge_img2prompt.sequence import (
+    ConsistencyAnchor,
+    SequenceRequest,
+    SequenceResult,
+    handle as handle_sequence,
+)
 from forge_img2prompt.provider import (
     DEFAULT_STRATEGY,
     DETAIL_WORDS_BOUNDS,
@@ -33,6 +40,8 @@ from forge_img2prompt.provider import (
     detail_is_redundant,
     detail_looks_like_full_scene,
     detail_looks_like_tag_soup,
+    family_hint,
+    language_instruction,
     max_tokens_for_words,
     normalize_language,
     normalize_strategy,
@@ -42,6 +51,7 @@ from forge_img2prompt.provider import (
     scene_context_snippet,
     shared_content_count,
     strategy_label,
+    word_range_instruction,
 )
 from forge_img2prompt.vl_catalog import VlModelChoice, choice_by_value, default_local_dir, is_local_ready
 from forge_img2prompt.vl_download import download_plan_markdown, ensure_model_downloaded
@@ -119,41 +129,15 @@ _DETAIL_SYSTEM = (
 
 
 def _language_instruction(language: str) -> str:
-    if normalize_language(language) == LANG_ES:
-        return (
-            "Write the entire prompt in Spanish (Castilian). "
-            "Do not mix English except for unavoidable brand names "
-            "or on-image text that is actually visible (then use «quotes»)."
-        )
-    return (
-        "Write the entire prompt in English. "
-        "Quote on-image text only when it is actually visible."
-    )
+    return language_instruction(language)
 
 
 def _word_range_instruction(word_min: int, word_max: int) -> str:
-    if word_min == word_max:
-        return (
-            f"LENGTH (mandatory, from UI sliders): write exactly {word_min} words "
-            "(count them; no more, no fewer). Ignore any other length habit."
-        )
-    return (
-        f"LENGTH (mandatory, from UI sliders): write between {word_min} and {word_max} "
-        "words inclusive (count carefully; stay inside this range). "
-        "Ignore any other length habit."
-    )
+    return word_range_instruction(word_min, word_max)
 
 
 def _family_hint(family: str) -> str:
-    if family == "klein9b":
-        return (
-            "Target FLUX.2 Klein 9B: keep spatial relations explicit; concrete nouns, "
-            "lighting direction and materials."
-        )
-    return (
-        "Target Krea 2: emphasize composition, lighting and materials "
-        "with concrete, information-dense language."
-    )
+    return family_hint(family)
 
 
 def _strategy_user_hint(strategy: str | None) -> str:
@@ -1088,6 +1072,72 @@ class QwenVLProvider:
             fragment=zone,
         )
 
+    def sequence(
+        self,
+        request: SequenceRequest,
+        choice: VlModelChoice,
+        *,
+        progress: ProgressCb | None = None,
+    ) -> SequenceResult:
+        """Secuencia texto→texto; el VL local se carga una vez y se libera al final."""
+        local = Path(choice.local_path) if choice.local_path else default_local_dir()
+
+        def report(frac: float, desc: str) -> None:
+            log(desc)
+            if progress:
+                progress(frac, desc)
+
+        try:
+            if not is_local_ready(local):
+                report(0.0, "Preparando descarga del modelo VL…")
+                ensure_model_downloaded(
+                    repo_id=choice.hf_id,
+                    local_dir=local,
+                    progress=lambda f, d: report(0.5 * f, d),
+                )
+            else:
+                report(0.1, f"Modelo en disco: {local}")
+
+            if choice.risk == "oom_8gb":
+                log(f"aviso: {choice.hf_id} puede OOM en 8 GB VRAM")
+            report(0.5, "Cargando modelo en GPU/CPU…")
+            self._ensure_loaded(str(local))
+
+            def run(system: str, user: str, max_new_tokens: int) -> str:
+                return self._run_vl(
+                    None,
+                    system,
+                    user,
+                    max_new_tokens=max_new_tokens,
+                    has_primary=False,
+                )
+
+            def on_step(frac: float, desc: str) -> None:
+                report(0.6 + 0.4 * frac, desc)
+
+            result = handle_sequence(request, run, progress=on_step, service="VL local")
+            report(1.0, "Secuencia lista")
+        except Exception as exc:  # noqa: BLE001
+            log(f"ERROR VL sequence: {exc}")
+            hint = ""
+            if choice.risk == "oom_8gb":
+                hint = " Prueba el Huihui 2B abliterated si fue OOM."
+            return SequenceResult(
+                prompts=(),
+                anchor=request.anchor or ConsistencyAnchor(),
+                deltas=(),
+                status=f"Error VL secuencia (`{choice.hf_id}`): {exc}.{hint}",
+            )
+        finally:
+            self.unload()
+            _free_forge_vram()
+
+        status = (
+            f"{result.status}\n"
+            f"· `{choice.hf_id}` desde `{local.name}` · VL descargado de VRAM."
+        )
+        return replace(result, status=status)
+
 
 class CompositeProvider:
     """Caption VL/Ollama/NaN (imagen o notas); stub solo si no hay nada que enviar."""
@@ -1141,6 +1191,27 @@ class CompositeProvider:
         choice = choice_by_value(vl_value) if vl_value else choice_by_value("")
         assert choice is not None
         return self._provider_for(choice).detail(request, choice, progress=progress)
+
+    def sequence(
+        self,
+        request: SequenceRequest,
+        vl_value: str = "",
+        *,
+        progress: ProgressCb | None = None,
+    ) -> SequenceResult:
+        """Biblia + deltas. El stub no participa: sin backend no hay biblia."""
+        choice = choice_by_value(vl_value) if vl_value else choice_by_value("")
+        assert choice is not None
+        provider = self._provider_for(choice)
+        method = getattr(provider, "sequence", None)
+        if method is None:
+            return SequenceResult(
+                prompts=(),
+                anchor=request.anchor or ConsistencyAnchor(),
+                deltas=(),
+                status="Este backend no soporta secuencias; elige Ollama, NaN o VL local.",
+            )
+        return method(request, choice, progress=progress)
 
 
 def initial_status_markdown() -> str:

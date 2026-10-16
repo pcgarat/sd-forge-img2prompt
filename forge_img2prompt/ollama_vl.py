@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 from typing import Callable
 
 from forge_img2prompt.log import log
@@ -98,6 +99,41 @@ class OllamaVLProvider:
 
     def _error_hint(self, exc: Exception, cfg: OllamaConfig, choice: VlModelChoice) -> str:
         return f"(`{cfg.model}` @ `{cfg.base_url}`): {exc}"
+
+    # --- Secuencia (n prompts coherentes) ------------------------------------
+
+    def sequence(
+        self,
+        request,
+        choice: VlModelChoice,
+        *,
+        progress: ProgressCb | None = None,
+    ):
+        """Biblia de continuidad + deltas por escena, todo texto a texto."""
+        from forge_img2prompt import sequence as seq
+
+        cfg = self._config(choice.hf_id)
+
+        def run(system: str, user: str, max_new_tokens: int) -> str:
+            return self._run(
+                None,
+                system,
+                user,
+                max_new_tokens=max_new_tokens,
+                model=choice.hf_id,
+            )
+
+        result = seq.handle(
+            request,
+            run,
+            progress=progress,
+            service=self.backend_label,
+        )
+        status = (
+            f"{result.status}\n"
+            f"· {self._status_note(cfg, choice)} · VRAM Forge intacta."
+        )
+        return replace(result, status=status)
 
     # --- Prompts (idénticos en ambos backends) -------------------------------
 
