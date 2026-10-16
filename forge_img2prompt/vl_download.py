@@ -202,7 +202,7 @@ def download_item(
         frac_start=frac_start,
         frac_end=frac_end,
     )
-    if progress:
+    if progress is not None:
         progress(frac_start, f"{item.filename} ({item.size_label})")
 
     kwargs: dict = {
@@ -218,7 +218,7 @@ def download_item(
 
     with _bridge_hf_tqdm(on_bytes):
         hf_hub_download(**kwargs)
-    if progress:
+    if progress is not None:
         progress(frac_end, f"{item.filename} ({item.size_label})")
 
 
@@ -234,7 +234,7 @@ def iter_model_download(
 
     def report(frac: float, desc: str) -> None:
         log(desc)
-        if progress:
+        if progress is not None:
             progress(max(0.0, min(1.0, frac)), desc)
 
     if is_local_ready(dest):

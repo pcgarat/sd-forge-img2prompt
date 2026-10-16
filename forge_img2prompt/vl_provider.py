@@ -765,7 +765,7 @@ class QwenVLProvider:
 
         def report(frac: float, desc: str) -> None:
             log(desc)
-            if progress:
+            if progress is not None:
                 progress(frac, desc)
 
         if not stack.is_supported:
@@ -900,7 +900,7 @@ class QwenVLProvider:
 
         def report(frac: float, desc: str) -> None:
             log(desc)
-            if progress:
+            if progress is not None:
                 progress(frac, desc)
 
         if not stack.is_supported:
@@ -1084,7 +1084,7 @@ class QwenVLProvider:
 
         def report(frac: float, desc: str) -> None:
             log(desc)
-            if progress:
+            if progress is not None:
                 progress(frac, desc)
 
         try:

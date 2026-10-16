@@ -625,7 +625,9 @@ def handle(
     done = 0
 
     def report(desc: str) -> None:
-        if progress:
+        # Identidad, nunca verdad: ``gr.Progress`` implementa ``__len__`` sobre
+        # una lista vacía y revienta al evaluarlo como booleano.
+        if progress is not None:
             progress(min(done / max(total_steps, 1), 1.0), desc)
 
     def invoke(system: str, user: str, tokens: int) -> str | None:
