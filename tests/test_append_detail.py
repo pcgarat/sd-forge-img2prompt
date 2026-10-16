@@ -1,5 +1,6 @@
 from forge_img2prompt.provider import (
     append_detail,
+    append_lora,
     detail_is_redundant,
     detail_looks_like_full_scene,
     detail_looks_like_tag_soup,
@@ -32,6 +33,26 @@ def test_append_detail_empty_base():
 def test_append_detail_normalizes_whitespace():
     assert append_detail("  Hello   world  ", "  more   detail ") == (
         "Hello world. More detail."
+    )
+
+
+def test_append_lora_adds_suffix_with_comma():
+    assert append_lora("Un gato en la ventana.", "<lora:pelo:0.8>") == (
+        "Un gato en la ventana, <lora:pelo:0.8>"
+    )
+
+
+def test_append_lora_empty_lora_keeps_prompt():
+    assert append_lora("Un gato en la ventana.", "   ") == "Un gato en la ventana."
+
+
+def test_append_lora_empty_prompt_returns_lora():
+    assert append_lora("", "<lora:pelo:0.8>") == "<lora:pelo:0.8>"
+
+
+def test_append_lora_normalizes_whitespace_and_commas():
+    assert append_lora("  Un gato  ", " , <lora:pelo:0.8> , ") == (
+        "Un gato, <lora:pelo:0.8>"
     )
 
 

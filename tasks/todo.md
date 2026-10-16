@@ -17,6 +17,9 @@ Repo: https://github.com/pcgarat/sd-forge-img2prompt
 - [ ] (Ask first) make target `img2prompt-ext` en docker-neo
 - [ ] Host: `OLLAMA_HOST=0.0.0.0:11434` (sudo) para Docker → Ollama
 - [x] ~~GGUF / llama.cpp (opcional)~~ → cubierto vía Ollama Q4
+- [x] Secuencia de n prompts: biblia de continuidad + deltas, `+/−`, recomponer sin LLM
+- [ ] Smoke secuencia: Generar → editar biblia → Recomponer → enviar escena a Prompt
+- [ ] Smoke secuencia con backend real (Ollama o NaN; el motor es solo texto)
 - [x] ~~Task 3 seed extensions/~~ cancelada — repo dedicado
 
 ## Fuera de ciclo

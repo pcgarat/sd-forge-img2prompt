@@ -43,10 +43,26 @@ from forge_img2prompt.provider import (
     STRATEGY_CHOICES,
     DetailRequest,
     PromptRequest,
+    append_lora,
     clamp_overlap_discard,
     normalize_ref_slots,
 )
 from forge_img2prompt.stack import detect_stack, pick_text_encoder
+from forge_img2prompt.sequence import (
+    ANCHOR_FIELDS,
+    ANCHOR_WORDS_BOUNDS,
+    ANCHOR_WORDS_DEFAULT,
+    DELTA_WORDS_BOUNDS,
+    DELTA_WORDS_DEFAULT,
+    SEQ_DEFAULT_SCENES,
+    SEQ_MAX_SCENES,
+    ConsistencyAnchor,
+    SequenceRequest,
+    anchor_label,
+    clamp_scene_count,
+    recompose,
+    state_payload,
+)
 from forge_img2prompt.nan_client import ping_models
 from forge_img2prompt.nan_settings import get_nan_config, register_nan_settings
 from forge_img2prompt.ollama_client import ping_tags
@@ -230,6 +246,16 @@ def on_ui_tabs():
     gen_lo, gen_hi = int(prefs["gen_wmin"]), int(prefs["gen_wmax"])
     det_lo, det_hi = int(prefs["det_wmin"]), int(prefs["det_wmax"])
     overlap0 = int(prefs["det_overlap"])
+    default_seq = clamp_scene_count(prefs.get("seq_scenes"))
+    seq_a_lo = int(prefs["seq_anchor_wmin"])
+    seq_a_hi = int(prefs["seq_anchor_wmax"])
+    seq_d_lo = int(prefs["seq_delta_wmin"])
+    seq_d_hi = int(prefs["seq_delta_wmax"])
+    saved_gen_loras = str(prefs.get("gen_loras") or "")
+    saved_seq_loras = list(prefs.get("seq_loras") or [])
+
+    def _saved_lora(index: int) -> str:
+        return saved_seq_loras[index] if index < len(saved_seq_loras) else ""
 
     with gr.Blocks(analytics_enabled=False) as ui:
         gr.Markdown(
@@ -292,6 +318,12 @@ def on_ui_tabs():
                         placeholder="Con imagen: prioriza la chaqueta… / Sin imagen: "
                         "un astronauta en Marte al atardecer… "
                         "(el modelo añade detalle visual).",
+                    )
+                    gen_loras = gr.Textbox(
+                        label="Loras (se pegan al final del prompt)",
+                        lines=1,
+                        value=saved_gen_loras,
+                        placeholder="<lora:nombre:0.8>, tag_estilo…",
                     )
                     gr.Markdown(
                         "Referencias opcionales (**Foto 1–3**): cítalas en **Notas** "
@@ -429,12 +461,237 @@ def on_ui_tabs():
                 with gr.Row():
                     send_t2i = gr.Button("Send to txt2img")
                     send_i2i = gr.Button("Send to img2img")
+                with gr.Accordion("Secuencia (n prompts con continuidad)", open=False):
+                    gr.Markdown(
+                        "**Escena 1 = objetivo**: describe qué quieres conseguir; el modelo "
+                        "inventa los detalles concretos y los fija en la **biblia de "
+                        "continuidad**. En las escenas extra escribe **solo lo que cambia**.\n\n"
+                        "La biblia se repite palabra por palabra en los n prompts, así que "
+                        "todo lo que aparezca queda descrito igual en todas las imágenes. "
+                        "Puedes editarla y pulsar **Recomponer** sin volver a llamar al modelo."
+                    )
+                    seq_goal = gr.Textbox(
+                        label="Escena 1 · objetivo",
+                        lines=3,
+                        placeholder="hombre bostezando en la cama, habitación de los 90 "
+                        "juvenil, está amaneciendo…",
+                    )
+                    seq_loras = [
+                        gr.Textbox(
+                            label="Loras escena 1 (se pegan al final de su prompt)",
+                            lines=1,
+                            value=_saved_lora(0),
+                            placeholder="<lora:nombre:0.8>, tag_estilo…",
+                        )
+                    ]
+                    seq_boxes = []
+                    for _i in range(1, SEQ_MAX_SCENES):
+                        seq_boxes.append(
+                            gr.Textbox(
+                                label=f"Escena {_i + 1} · qué cambia",
+                                lines=2,
+                                visible=_i < default_seq,
+                                placeholder="el hombre se sienta al borde de la cama…",
+                            )
+                        )
+                        seq_loras.append(
+                            gr.Textbox(
+                                label=f"Loras escena {_i + 1} (se pegan al final de su prompt)",
+                                lines=1,
+                                value=_saved_lora(_i),
+                                visible=_i < default_seq,
+                                placeholder="<lora:nombre:0.8>, tag_estilo…",
+                            )
+                        )
+                    with gr.Row():
+                        seq_minus_btn = gr.Button("−", min_width=44, scale=0)
+                        seq_count_md = gr.Markdown()
+                        seq_plus_btn = gr.Button("+", min_width=44, scale=0)
+                    seq_count = gr.Number(
+                        value=default_seq,
+                        label="Nº de escenas",
+                        precision=0,
+                        visible=False,
+                    )
+                    with gr.Accordion("Biblia de continuidad (editable)", open=False):
+                        gr.Markdown(
+                            "Lo que debe ser **idéntico** en todas las imágenes. "
+                            "Vacía un campo para que no aparezca en ningún prompt."
+                        )
+                        seq_anchor_boxes = []
+                        for _field in ANCHOR_FIELDS:
+                            seq_anchor_boxes.append(
+                                gr.Textbox(
+                                    label=anchor_label(_field),
+                                    lines=1,
+                                    placeholder="(lo inventa el modelo)",
+                                )
+                            )
+                    with gr.Accordion("Longitud (palabras)", open=False):
+                        gr.HTML(
+                            dual_range_html(
+                                widget_id="img2prompt_seq_anchor_dual",
+                                bridge_id="img2prompt_seq_anchor_range",
+                                label="Biblia",
+                                lo=seq_a_lo,
+                                hi=seq_a_hi,
+                                minimum=ANCHOR_WORDS_BOUNDS[0],
+                                maximum=ANCHOR_WORDS_BOUNDS[1],
+                                step=5,
+                            )
+                        )
+                        seq_anchor_range = gr.Textbox(
+                            value=format_range(seq_a_lo, seq_a_hi),
+                            elem_id="img2prompt_seq_anchor_range",
+                            visible=False,
+                            label="seq_anchor_range",
+                        )
+                        gr.HTML(
+                            dual_range_html(
+                                widget_id="img2prompt_seq_delta_dual",
+                                bridge_id="img2prompt_seq_delta_range",
+                                label="Cambio por escena",
+                                lo=seq_d_lo,
+                                hi=seq_d_hi,
+                                minimum=DELTA_WORDS_BOUNDS[0],
+                                maximum=DELTA_WORDS_BOUNDS[1],
+                                step=1,
+                            )
+                        )
+                        seq_delta_range = gr.Textbox(
+                            value=format_range(seq_d_lo, seq_d_hi),
+                            elem_id="img2prompt_seq_delta_range",
+                            visible=False,
+                            label="seq_delta_range",
+                        )
+                    with gr.Row():
+                        seq_gen_btn = gr.Button("Generar secuencia", variant="primary")
+                        seq_recompose_btn = gr.Button("Recomponer (sin LLM)")
+                    seq_status = gr.Markdown()
+                    seq_all = gr.Textbox(
+                        label="Los n prompts (copia masiva)",
+                        lines=10,
+                        show_copy_button=True,
+                        elem_id="img2prompt_seq_all",
+                    )
+                    with gr.Row():
+                        seq_scene_dd = gr.Dropdown(
+                            label="Escena a enviar",
+                            choices=[],
+                            interactive=True,
+                            scale=3,
+                        )
+                        seq_send_btn = gr.Button("→ Prompt", scale=1)
+                    seq_state = gr.State({})
+                    seq_prompts = gr.State([])
                 with gr.Accordion("Log (últimas peticiones)", open=False):
                     with gr.Row():
                         log_out = gr.Markdown(value=_log_markdown())
                     with gr.Row():
                         refresh_log_btn = gr.Button("↻", min_width=40)
                         clear_log_btn = gr.Button("Limpiar log")
+
+        # --- Secuencia: entradas planas (Gradio no acepta listas anidadas) ---
+        def _seq_split_scenes(args: tuple) -> tuple[str, list, list, list, tuple]:
+            """``*args`` plano → (objetivo, cajas, loras, biblia, resto)."""
+            goal = str(args[0] or "")
+            n_boxes = SEQ_MAX_SCENES - 1
+            boxes = list(args[1 : 1 + n_boxes])
+            after_boxes = 1 + n_boxes
+            loras = list(args[after_boxes : after_boxes + SEQ_MAX_SCENES])
+            after_loras = after_boxes + SEQ_MAX_SCENES
+            anchors = list(args[after_loras : after_loras + len(ANCHOR_FIELDS)])
+            return goal, boxes, loras, anchors, args[after_loras + len(ANCHOR_FIELDS) :]
+
+        def _seq_sources(goal: str, boxes: list, count: int) -> tuple[str, ...]:
+            changes = tuple(str(b or "") for b in boxes)[: max(count - 1, 0)]
+            return (goal, *changes)
+
+        def _seq_render(result, sources: tuple[str, ...], loras: list | tuple = ()):
+            """Salida común de Generar/Recomponer → prompts, estado y dropdown."""
+            prompts = tuple(
+                append_lora(p, loras[i] if i < len(loras) else "")
+                for i, p in enumerate(result.prompts)
+            )
+            choices = [(f"Escena {i}", i) for i in range(1, len(prompts) + 1)]
+            markdown = "\n\n---\n\n".join(
+                f"**Escena {i}**\n\n{p}" for i, p in enumerate(prompts, start=1)
+            )
+            return (
+                markdown,
+                prompts[0] if prompts else "",
+                result.sampler_hints,
+                result.status,
+                state_payload(result, sources),
+                list(prompts),
+                gr.update(choices=choices, value=1 if choices else None),
+                *[result.anchor.field(f) for f in ANCHOR_FIELDS],
+            )
+
+        def _seq_generate(*args, progress=gr.Progress(track_tqdm=True)):
+            goal, boxes, loras, anchors, rest = _seq_split_scenes(args)
+            vl_value, strategy, language, anchor_raw, delta_raw, count = rest
+            n = clamp_scene_count(count)
+            sources = _seq_sources(goal, boxes, n)
+            choice = choice_by_value(vl_value, _CATALOG)
+            if choice is None:
+                yield (
+                    "",
+                    "",
+                    "",
+                    "Modelo VL no válido: refresca el catálogo (↻).",
+                    gr.update(),
+                    [],
+                    gr.update(),
+                    *["" for _ in ANCHOR_FIELDS],
+                )
+                return
+            a_lo, a_hi = parse_range_text(
+                anchor_raw, bounds=ANCHOR_WORDS_BOUNDS, default=ANCHOR_WORDS_DEFAULT
+            )
+            d_lo, d_hi = parse_range_text(
+                delta_raw, bounds=DELTA_WORDS_BOUNDS, default=DELTA_WORDS_DEFAULT
+            )
+            manual = ConsistencyAnchor.from_fields(*anchors)
+            request = SequenceRequest(
+                goal=goal,
+                deltas=sources[1:],
+                stack=_current_stack(),
+                language=language,
+                strategy=strategy,
+                anchor=None if manual.is_empty() else manual,
+                anchor_word_min=a_lo,
+                anchor_word_max=a_hi,
+                delta_word_min=d_lo,
+                delta_word_max=d_hi,
+            )
+            result = _PROVIDER.sequence(request, choice.value, progress=progress)
+            yield _seq_render(result, sources, loras[:n])
+
+        def _seq_recompose(*args):
+            goal, boxes, loras, anchors, rest = _seq_split_scenes(args)
+            state, count = rest
+            n = clamp_scene_count(count)
+            sources = _seq_sources(goal, boxes, n)
+            result = recompose(
+                ConsistencyAnchor.from_fields(*anchors),
+                goal,
+                sources[1:],
+                state=state,
+                stack=_current_stack(),
+            )
+            return _seq_render(result, sources, loras[:n])
+
+        def _seq_push_to_prompt(scene_index, prompts: list):
+            """El ``State`` con la tupla de prompts es la fuente de verdad."""
+            try:
+                idx = int(scene_index)
+            except (TypeError, ValueError):
+                idx = 1
+            items = list(prompts or [])
+            if idx < 1 or idx > len(items):
+                return items[0] if items else ""
+            return items[idx - 1]
 
         def _persist_prefs(
             gen_raw: str,
@@ -443,12 +700,23 @@ def on_ui_tabs():
             language: str,
             strategy: str,
             vl_value: str,
+            seq_anchor_raw: str = "",
+            seq_delta_raw: str = "",
+            seq_scenes: float = SEQ_DEFAULT_SCENES,
+            gen_loras_val: str = "",
+            *seq_loras_vals: str,
         ):
             g_lo, g_hi = parse_range_text(
                 gen_raw, bounds=GEN_WORDS_BOUNDS, default=GEN_WORDS_DEFAULT
             )
             d_lo, d_hi = parse_range_text(
                 det_raw, bounds=DETAIL_WORDS_BOUNDS, default=DETAIL_WORDS_DEFAULT
+            )
+            s_a_lo, s_a_hi = parse_range_text(
+                seq_anchor_raw, bounds=ANCHOR_WORDS_BOUNDS, default=ANCHOR_WORDS_DEFAULT
+            )
+            s_d_lo, s_d_hi = parse_range_text(
+                seq_delta_raw, bounds=DELTA_WORDS_BOUNDS, default=DELTA_WORDS_DEFAULT
             )
             save_prefs(
                 EXT_DIR,
@@ -461,6 +729,13 @@ def on_ui_tabs():
                     "language": language or DEFAULT_LANG,
                     "strategy": strategy or DEFAULT_STRATEGY,
                     "vl_value": vl_value or "",
+                    "seq_scenes": clamp_scene_count(seq_scenes),
+                    "seq_anchor_wmin": s_a_lo,
+                    "seq_anchor_wmax": s_a_hi,
+                    "seq_delta_wmin": s_d_lo,
+                    "seq_delta_wmax": s_d_hi,
+                    "gen_loras": str(gen_loras_val or ""),
+                    "seq_loras": [str(v or "") for v in seq_loras_vals],
                 },
             )
             return None
@@ -468,6 +743,7 @@ def on_ui_tabs():
         def _generate_with_plan(
             editor: dict[str, Any] | Image.Image | None,
             notes_val: str,
+            gen_loras_val: str,
             vl_value: str,
             strategy: str,
             language: str,
@@ -566,7 +842,8 @@ def on_ui_tabs():
             if result.negative_hint:
                 hints = f"{hints}\n{result.negative_hint}".strip()
             status = f"{stack.summary}\n{result.status}".strip()
-            yield result.prompt, hints, status, _plan_for_value(choice.value), _log_markdown()
+            prompt = append_lora(result.prompt, gen_loras_val)
+            yield prompt, hints, status, _plan_for_value(choice.value), _log_markdown()
 
         def _preview_mask_crop(editor: dict[str, Any] | Image.Image | None):
             if not isinstance(editor, dict):
@@ -760,26 +1037,120 @@ def on_ui_tabs():
             inputs=[image],
             outputs=[crop_preview],
         )
-        for src in (gen_range, det_range, det_overlap, lang_dd, strategy_dd, vl_dd):
-            src.change(
-                fn=_persist_prefs,
-                inputs=[
-                    gen_range,
-                    det_range,
-                    det_overlap,
-                    lang_dd,
-                    strategy_dd,
-                    vl_dd,
-                ],
+        _PREFS_INPUTS = [
+            gen_range,
+            det_range,
+            det_overlap,
+            lang_dd,
+            strategy_dd,
+            vl_dd,
+            seq_anchor_range,
+            seq_delta_range,
+            seq_count,
+            gen_loras,
+            *seq_loras,
+        ]
+        for src in (
+            gen_range,
+            det_range,
+            det_overlap,
+            lang_dd,
+            strategy_dd,
+            vl_dd,
+            seq_anchor_range,
+            seq_delta_range,
+            seq_count,
+            seq_goal,
+            *seq_boxes,
+            gen_loras,
+            *seq_loras,
+        ):
+            src.change(fn=_persist_prefs, inputs=_PREFS_INPUTS)
+        # --- Secuencia -----------------------------------------------------
+        _SEQ_IN_SCENE = [seq_goal, *seq_boxes]
+        _SEQ_IN_LORA = list(seq_loras)
+        _SEQ_IN_ANCHOR = list(seq_anchor_boxes)
+        _SEQ_IN_REST = [
+            vl_dd,
+            strategy_dd,
+            lang_dd,
+            seq_anchor_range,
+            seq_delta_range,
+            seq_count,
+        ]
+        _SEQ_OUT = [
+            seq_all,
+            prompt_out,
+            hints_out,
+            seq_status,
+            seq_state,
+            seq_prompts,
+            seq_scene_dd,
+            *seq_anchor_boxes,
+        ]
+
+        def _seq_scenes_update(count: float):
+            n = clamp_scene_count(count)
+            box_updates = [gr.update(visible=(i + 1) < n) for i in range(SEQ_MAX_SCENES - 1)]
+            lora_updates = [gr.update(visible=True)] + [
+                gr.update(visible=(i < n)) for i in range(1, SEQ_MAX_SCENES)
+            ]
+            save_prefs(EXT_DIR, {"seq_scenes": n})
+            return (
+                n,
+                f"**{n}** escena(s) · biblia + {max(n - 1, 0)} cambio(s)",
+                *box_updates,
+                *lora_updates,
             )
+
+        seq_plus_btn.click(
+            fn=lambda c: _seq_scenes_update(c + 1),
+            inputs=[seq_count],
+            outputs=[seq_count, seq_count_md, *seq_boxes, *seq_loras],
+        )
+        seq_minus_btn.click(
+            fn=lambda c: _seq_scenes_update(c - 1),
+            inputs=[seq_count],
+            outputs=[seq_count, seq_count_md, *seq_boxes, *seq_loras],
+        )
+        # El dual-range de la biblia se sincroniza al payload; el de escena va directo.
+        _scene_args = ", ".join(f"c{i}" for i in range(1, SEQ_MAX_SCENES))
+        _lora_args = ", ".join(f"l{i}" for i in range(1, SEQ_MAX_SCENES + 1))
+        _anchor_args = ", ".join(f"a{i}" for i in range(1, len(ANCHOR_FIELDS) + 1))
+        _tail_args = "vl, strat, lang, a_raw, d_raw, count"
+        _JS_SYNC_SEQ = (
+            f"(goal, {_scene_args}, {_lora_args}, {_anchor_args}, {_tail_args}) => {{\n"
+            "  if (window.img2promptSyncRanges) window.img2promptSyncRanges();\n"
+            '  const root = document.getElementById("img2prompt_seq_anchor_range");\n'
+            "  const el = root && root.querySelector('textarea, input');\n"
+            f"  return [goal, {_scene_args}, {_lora_args}, {_anchor_args}, vl, strat, lang, "
+            "el ? el.value : a_raw, d_raw, count];\n"
+            "}"
+        ).strip()
+        seq_gen_btn.click(
+            fn=_seq_generate,
+            inputs=[*_SEQ_IN_SCENE, *_SEQ_IN_LORA, *_SEQ_IN_ANCHOR, *_SEQ_IN_REST],
+            outputs=_SEQ_OUT,
+            js=_JS_SYNC_SEQ,
+        )
+        seq_recompose_btn.click(
+            fn=_seq_recompose,
+            inputs=[*_SEQ_IN_SCENE, *_SEQ_IN_LORA, *_SEQ_IN_ANCHOR, seq_state, seq_count],
+            outputs=_SEQ_OUT,
+        )
+        seq_send_btn.click(
+            fn=_seq_push_to_prompt,
+            inputs=[seq_scene_dd, seq_prompts],
+            outputs=[prompt_out],
+        )
         # Forge Neo = Gradio 4.x → parámetro `js` (no `_js`).
         # El preprocesador fuerza el valor del dual-range al payload del click.
         _JS_SYNC_GEN = """
-(img, notes, vl, strategy, lang, gen_raw, r1, r2, r3) => {
+(img, notes, loras, vl, strategy, lang, gen_raw, r1, r2, r3) => {
   if (window.img2promptSyncRanges) window.img2promptSyncRanges();
   const root = document.getElementById("img2prompt_gen_range");
   const el = root && root.querySelector("textarea, input");
-  return [img, notes, vl, strategy, lang, el ? el.value : gen_raw, r1, r2, r3];
+  return [img, notes, loras, vl, strategy, lang, el ? el.value : gen_raw, r1, r2, r3];
 }
 """.strip()
         _JS_SYNC_DET = """
@@ -795,6 +1166,7 @@ def on_ui_tabs():
             inputs=[
                 image,
                 notes,
+                gen_loras,
                 vl_dd,
                 strategy_dd,
                 lang_dd,
@@ -845,6 +1217,11 @@ def on_ui_tabs():
         refresh_btn.click(fn=_refresh_stack, inputs=[], outputs=[status_out])
         ui.load(fn=_refresh_stack, inputs=[], outputs=[status_out])
         ui.load(fn=lambda: _plan_for_value(default_vl), inputs=[], outputs=[download_plan])
+        ui.load(
+            fn=_seq_scenes_update,
+            inputs=[seq_count],
+            outputs=[seq_count, seq_count_md, *seq_boxes, *seq_loras],
+        )
         ui.load(
             fn=None,
             inputs=None,

@@ -268,6 +268,25 @@ def append_detail(base: str, detail: str) -> str:
     return f"{base} {detail}"
 
 
+def append_lora(prompt: str, lora: str) -> str:
+    """Pega el bloque de loras al final del prompt; vacío = sin cambios.
+
+    Las loras viajan como etiquetas («<lora:x:0.8>», tags sueltos) y deben
+    quedar tras la prosa, no fundidas en ella: se coloca una coma y se recorta
+    el punto final para que no aparezca «. ,».
+    """
+    base = " ".join((prompt or "").split()).strip()
+    extra = " ".join((lora or "").split()).strip().strip(",;").strip()
+    if not extra:
+        return base
+    base = base.rstrip(",;").rstrip()
+    if base and base[-1] in ".!?":
+        base = base[:-1].rstrip(",;").rstrip()
+    if not base:
+        return extra
+    return f"{base}, {extra}"
+
+
 def scene_context_snippet(base: str, *, max_chars: int = 280) -> str:
     """Short scene text for zone identity only (not a full prompt to retell)."""
     text = " ".join((base or "").split()).strip()
@@ -469,6 +488,50 @@ def normalize_strategy(strategy: str | None) -> str:
 
 def strategy_label(strategy: str | None) -> str:
     return STRATEGY_REGISTRY.label(strategy)
+
+
+_LANG_INSTRUCTIONS: dict[str, str] = {
+    LANG_ES: (
+        "Write the entire prompt in Spanish (Castilian). "
+        "Do not mix English except for unavoidable brand names "
+        "or on-image text that is actually visible (then use «quotes»)."
+    ),
+    LANG_EN: (
+        "Write the entire prompt in English. "
+        "Quote on-image text only when it is actually visible."
+    ),
+}
+
+
+def language_instruction(language: str | None) -> str:
+    """Idioma de salida; vive aquí para que la lógica pura no importe torch."""
+    return _LANG_INSTRUCTIONS[normalize_language(language)]
+
+
+def word_range_instruction(word_min: int, word_max: int) -> str:
+    if word_min == word_max:
+        return (
+            f"LENGTH (mandatory, from UI sliders): write exactly {word_min} words "
+            "(count them; no more, no fewer). Ignore any other length habit."
+        )
+    return (
+        f"LENGTH (mandatory, from UI sliders): write between {word_min} and {word_max} "
+        "words inclusive (count carefully; stay inside this range). "
+        "Ignore any other length habit."
+    )
+
+
+def family_hint(family: str) -> str:
+    if family == "klein9b":
+        return (
+            "Target FLUX.2 Klein 9B: keep spatial relations explicit; concrete nouns, "
+            "lighting direction and materials."
+        )
+    return (
+        "Target Krea 2: emphasize composition, lighting and materials "
+        "with concrete, information-dense language."
+    )
+
 
 
 @dataclass(frozen=True)

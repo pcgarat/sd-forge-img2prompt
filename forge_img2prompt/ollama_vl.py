@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
-from typing import Callable
+from dataclasses import replace
 
 from forge_img2prompt.log import log
 from forge_img2prompt.ollama_client import chat_with_image
 from forge_img2prompt.ollama_settings import OllamaConfig, get_ollama_config
+from forge_img2prompt.progress import Progress, ProgressLike
 from forge_img2prompt.provider import (
     DEFAULT_STRATEGY,
     DETAIL_WORDS_BOUNDS,
@@ -52,8 +53,6 @@ from forge_img2prompt.vl_provider import (
     _word_range_instruction,
 )
 
-ProgressCb = Callable[[float, str], None]
-
 
 class OllamaVLProvider:
     """Generate/detail vía backend remoto OpenAI-compatible (Ollama / NaN).
@@ -98,6 +97,41 @@ class OllamaVLProvider:
 
     def _error_hint(self, exc: Exception, cfg: OllamaConfig, choice: VlModelChoice) -> str:
         return f"(`{cfg.model}` @ `{cfg.base_url}`): {exc}"
+
+    # --- Secuencia (n prompts coherentes) ------------------------------------
+
+    def sequence(
+        self,
+        request,
+        choice: VlModelChoice,
+        *,
+        progress: ProgressLike = None,
+    ):
+        """Biblia de continuidad + deltas por escena, todo texto a texto."""
+        from forge_img2prompt import sequence as seq
+
+        cfg = self._config(choice.hf_id)
+
+        def run(system: str, user: str, max_new_tokens: int) -> str:
+            return self._run(
+                None,
+                system,
+                user,
+                max_new_tokens=max_new_tokens,
+                model=choice.hf_id,
+            )
+
+        result = seq.handle(
+            request,
+            run,
+            progress=progress,
+            service=self.backend_label,
+        )
+        status = (
+            f"{result.status}\n"
+            f"· {self._status_note(cfg, choice)} · VRAM Forge intacta."
+        )
+        return replace(result, status=status)
 
     # --- Prompts (idénticos en ambos backends) -------------------------------
 
@@ -262,16 +296,16 @@ class OllamaVLProvider:
         request: PromptRequest,
         choice: VlModelChoice,
         *,
-        progress: ProgressCb | None = None,
+        progress: ProgressLike = None,
     ) -> PromptResult:
         stack = request.stack
         hints = _sampler_hints(stack.family, stack.variant)
         cfg = self._config(choice.hf_id)
+        sink = Progress.wrap(progress)
 
         def report(frac: float, desc: str) -> None:
             log(desc)
-            if progress:
-                progress(frac, desc)
+            sink.notify(frac, desc)
 
         if not stack.is_supported:
             return PromptResult(
@@ -379,18 +413,18 @@ class OllamaVLProvider:
         request: DetailRequest,
         choice: VlModelChoice,
         *,
-        progress: ProgressCb | None = None,
+        progress: ProgressLike = None,
     ) -> PromptResult:
         stack = request.stack
         hints = _sampler_hints(stack.family, stack.variant)
         base = (request.base_prompt or "").strip()
         cfg = self._config(choice.hf_id)
         backend = self.backend_label
+        sink = Progress.wrap(progress)
 
         def report(frac: float, desc: str) -> None:
             log(desc)
-            if progress:
-                progress(frac, desc)
+            sink.notify(frac, desc)
 
         if not stack.is_supported:
             return PromptResult(
