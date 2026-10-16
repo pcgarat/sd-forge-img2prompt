@@ -3,11 +3,11 @@
 from __future__ import annotations
 
 from dataclasses import replace
-from typing import Callable
 
 from forge_img2prompt.log import log
 from forge_img2prompt.ollama_client import chat_with_image
 from forge_img2prompt.ollama_settings import OllamaConfig, get_ollama_config
+from forge_img2prompt.progress import Progress, ProgressLike
 from forge_img2prompt.provider import (
     DEFAULT_STRATEGY,
     DETAIL_WORDS_BOUNDS,
@@ -52,8 +52,6 @@ from forge_img2prompt.vl_provider import (
     _pack_refs_only,
     _word_range_instruction,
 )
-
-ProgressCb = Callable[[float, str], None]
 
 
 class OllamaVLProvider:
@@ -107,7 +105,7 @@ class OllamaVLProvider:
         request,
         choice: VlModelChoice,
         *,
-        progress: ProgressCb | None = None,
+        progress: ProgressLike = None,
     ):
         """Biblia de continuidad + deltas por escena, todo texto a texto."""
         from forge_img2prompt import sequence as seq
@@ -298,16 +296,16 @@ class OllamaVLProvider:
         request: PromptRequest,
         choice: VlModelChoice,
         *,
-        progress: ProgressCb | None = None,
+        progress: ProgressLike = None,
     ) -> PromptResult:
         stack = request.stack
         hints = _sampler_hints(stack.family, stack.variant)
         cfg = self._config(choice.hf_id)
+        sink = Progress.wrap(progress)
 
         def report(frac: float, desc: str) -> None:
             log(desc)
-            if progress is not None:
-                progress(frac, desc)
+            sink.notify(frac, desc)
 
         if not stack.is_supported:
             return PromptResult(
@@ -415,18 +413,18 @@ class OllamaVLProvider:
         request: DetailRequest,
         choice: VlModelChoice,
         *,
-        progress: ProgressCb | None = None,
+        progress: ProgressLike = None,
     ) -> PromptResult:
         stack = request.stack
         hints = _sampler_hints(stack.family, stack.variant)
         base = (request.base_prompt or "").strip()
         cfg = self._config(choice.hf_id)
         backend = self.backend_label
+        sink = Progress.wrap(progress)
 
         def report(frac: float, desc: str) -> None:
             log(desc)
-            if progress is not None:
-                progress(frac, desc)
+            sink.notify(frac, desc)
 
         if not stack.is_supported:
             return PromptResult(

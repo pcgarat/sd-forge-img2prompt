@@ -1,6 +1,7 @@
 """Image → prompt helpers for Forge Neo (Krea 2 / Klein + Qwen VL)."""
 
 from forge_img2prompt.log import log
+from forge_img2prompt.progress import Progress, ProgressLike
 from forge_img2prompt.provider import (
     DetailRequest,
     PromptProvider,
@@ -47,6 +48,8 @@ __all__ = [
     "QwenVLProvider",
     "NanVLProvider",
     "OllamaVLProvider",
+    "Progress",
+    "ProgressLike",
     "StackInfo",
     "VlModelChoice",
     "ConsistencyAnchor",

@@ -3,7 +3,7 @@ from __future__ import annotations
 import gc
 from dataclasses import replace
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 
 import torch
 from PIL import Image
@@ -53,10 +53,9 @@ from forge_img2prompt.provider import (
     strategy_label,
     word_range_instruction,
 )
+from forge_img2prompt.progress import Progress, ProgressLike
 from forge_img2prompt.vl_catalog import VlModelChoice, choice_by_value, default_local_dir, is_local_ready
 from forge_img2prompt.vl_download import download_plan_markdown, ensure_model_downloaded
-
-ProgressCb = Callable[[float, str], None]
 
 _COMMON_CAPTION_RULES = (
     "Reply in natural language only — no bullet lists, no booru tags, no preamble. "
@@ -758,15 +757,15 @@ class QwenVLProvider:
         request: PromptRequest,
         choice: VlModelChoice,
         *,
-        progress: ProgressCb | None = None,
+        progress: ProgressLike = None,
     ) -> PromptResult:
         stack = request.stack
         hints = _sampler_hints(stack.family, stack.variant)
+        sink = Progress.wrap(progress)
 
         def report(frac: float, desc: str) -> None:
             log(desc)
-            if progress is not None:
-                progress(frac, desc)
+            sink.notify(frac, desc)
 
         if not stack.is_supported:
             return PromptResult(
@@ -892,16 +891,16 @@ class QwenVLProvider:
         request: DetailRequest,
         choice: VlModelChoice,
         *,
-        progress: ProgressCb | None = None,
+        progress: ProgressLike = None,
     ) -> PromptResult:
         stack = request.stack
         hints = _sampler_hints(stack.family, stack.variant)
         base = (request.base_prompt or "").strip()
+        sink = Progress.wrap(progress)
 
         def report(frac: float, desc: str) -> None:
             log(desc)
-            if progress is not None:
-                progress(frac, desc)
+            sink.notify(frac, desc)
 
         if not stack.is_supported:
             return PromptResult(
@@ -1077,15 +1076,15 @@ class QwenVLProvider:
         request: SequenceRequest,
         choice: VlModelChoice,
         *,
-        progress: ProgressCb | None = None,
+        progress: ProgressLike = None,
     ) -> SequenceResult:
         """Secuencia texto→texto; el VL local se carga una vez y se libera al final."""
         local = Path(choice.local_path) if choice.local_path else default_local_dir()
+        sink = Progress.wrap(progress)
 
         def report(frac: float, desc: str) -> None:
             log(desc)
-            if progress is not None:
-                progress(frac, desc)
+            sink.notify(frac, desc)
 
         try:
             if not is_local_ready(local):
@@ -1172,7 +1171,7 @@ class CompositeProvider:
         request: PromptRequest,
         vl_value: str = "",
         *,
-        progress: ProgressCb | None = None,
+        progress: ProgressLike = None,
     ) -> PromptResult:
         # Sin imagen: el modelo expande Notas (refs opcionales). Stub solo si vacío.
         if self._remote(request):
@@ -1186,7 +1185,7 @@ class CompositeProvider:
         request: DetailRequest,
         vl_value: str = "",
         *,
-        progress: ProgressCb | None = None,
+        progress: ProgressLike = None,
     ) -> PromptResult:
         choice = choice_by_value(vl_value) if vl_value else choice_by_value("")
         assert choice is not None
@@ -1197,7 +1196,7 @@ class CompositeProvider:
         request: SequenceRequest,
         vl_value: str = "",
         *,
-        progress: ProgressCb | None = None,
+        progress: ProgressLike = None,
     ) -> SequenceResult:
         """Biblia + deltas. El stub no participa: sin backend no hay biblia."""
         choice = choice_by_value(vl_value) if vl_value else choice_by_value("")

@@ -7,9 +7,9 @@ from pathlib import Path
 from typing import Callable, Iterator
 
 from forge_img2prompt.log import log
+from forge_img2prompt.progress import Progress, ProgressLike
 from forge_img2prompt.vl_catalog import DEFAULT_HF_ID, default_local_dir, is_local_ready
 
-ProgressCb = Callable[[float, str], None]
 PlanCb = Callable[[str], None]
 StatusCb = Callable[[str], None]
 
@@ -146,19 +146,18 @@ def _throttled_file_progress(
     *,
     filename: str,
     size_label: str,
-    progress: ProgressCb | None,
+    progress: ProgressLike,
     frac_start: float,
     frac_end: float,
     min_interval_s: float = 0.2,
 ) -> Callable[[int, int | None], None]:
     """Mapea bytes del fichero actual → [frac_start, frac_end] con throttle."""
+    sink = Progress.wrap(progress)
     last_t = 0.0
     last_frac = -1.0
 
     def on_bytes(n: int, total: int | None) -> None:
         nonlocal last_t, last_frac
-        if progress is None:
-            return
         denom = total if total and total > 0 else None
         if denom is None:
             file_frac = 0.0 if n <= 0 else 0.5
@@ -176,7 +175,7 @@ def _throttled_file_progress(
             desc = f"{filename} ({size_label}) · {pct:.0f}% · {mb:.0f} MB"
         else:
             desc = f"{filename} ({size_label})"
-        progress(max(0.0, min(1.0, frac)), desc)
+        sink.notify(frac, desc)
 
     return on_bytes
 
@@ -186,7 +185,7 @@ def download_item(
     repo_id: str,
     item: DownloadItem,
     local_dir: Path,
-    progress: ProgressCb | None = None,
+    progress: ProgressLike = None,
     frac_start: float = 0.0,
     frac_end: float = 1.0,
 ) -> None:
@@ -195,15 +194,15 @@ def download_item(
 
     from huggingface_hub import hf_hub_download
 
+    sink = Progress.wrap(progress)
     on_bytes = _throttled_file_progress(
         filename=item.filename,
         size_label=item.size_label,
-        progress=progress,
+        progress=sink,
         frac_start=frac_start,
         frac_end=frac_end,
     )
-    if progress is not None:
-        progress(frac_start, f"{item.filename} ({item.size_label})")
+    sink.notify(frac_start, f"{item.filename} ({item.size_label})")
 
     kwargs: dict = {
         "repo_id": repo_id,
@@ -218,24 +217,23 @@ def download_item(
 
     with _bridge_hf_tqdm(on_bytes):
         hf_hub_download(**kwargs)
-    if progress is not None:
-        progress(frac_end, f"{item.filename} ({item.size_label})")
+    sink.notify(frac_end, f"{item.filename} ({item.size_label})")
 
 
 def iter_model_download(
     *,
     repo_id: str = DEFAULT_HF_ID,
     local_dir: Path | None = None,
-    progress: ProgressCb | None = None,
+    progress: ProgressLike = None,
 ) -> Iterator[DownloadEvent]:
     """Único bucle de descarga. Emite (status, plan) en hitos; `progress` lleva la barra."""
     dest = Path(local_dir) if local_dir else default_local_dir()
     dest.mkdir(parents=True, exist_ok=True)
+    sink = Progress.wrap(progress)
 
     def report(frac: float, desc: str) -> None:
         log(desc)
-        if progress is not None:
-            progress(max(0.0, min(1.0, frac)), desc)
+        sink.notify(frac, desc)
 
     if is_local_ready(dest):
         report(1.0, "Modelo ya descargado")
@@ -303,16 +301,16 @@ def ensure_model_downloaded(
     *,
     repo_id: str = DEFAULT_HF_ID,
     local_dir: Path | None = None,
-    progress: ProgressCb | None = None,
+    progress: ProgressLike = None,
     plan_update: PlanCb | None = None,
     status_update: StatusCb | None = None,
 ) -> Path:
     """Wrapper síncrono sobre `iter_model_download` (providers / callers no-Gradio)."""
     dest = Path(local_dir) if local_dir else default_local_dir()
     for event in iter_model_download(repo_id=repo_id, local_dir=dest, progress=progress):
-        if status_update:
+        if status_update is not None:
             status_update(event.status)
-        if plan_update:
+        if plan_update is not None:
             plan_update(event.plan)
     return dest
 

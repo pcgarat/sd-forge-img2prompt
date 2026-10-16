@@ -1,16 +1,17 @@
 """Contrato del callback de progreso: nunca se evalúa como booleano.
 
-``gr.Progress`` es un objeto llamable que implementa ``__len__`` sobre una lista
-de barras activas. Un ``if progress:`` con la lista vacía lanza ``IndexError``
-en mitad de una secuencia o de una descarga. Estos tests fijan el contrato en
-las tres capas que reciben el callback desde la UI: motor de secuencia,
-proveedores remotos y descarga de modelos.
+``gr.Progress`` es un objeto llamable que implementa ``__len__`` sobre las
+barras activas. Un ``if progress:`` con la lista vacía lanza ``IndexError`` en
+mitad de una secuencia o de una descarga. Estos tests fijan el contrato en las
+tres capas que reciben el callback desde la UI: motor de secuencia, proveedores
+remotos y descarga de modelos.
 """
 
 from __future__ import annotations
 
 import pytest
 
+from forge_img2prompt.progress import Progress
 from forge_img2prompt.provider import PromptRequest
 from forge_img2prompt.stack import detect_stack
 
@@ -30,6 +31,29 @@ class _GradioLikeProgress:
 
 def _krea():
     return detect_stack("krea2_turbo.safetensors", "qwen3vl_4b.safetensors")
+
+
+def test_progress_wrap_accepts_none_callback_and_itself():
+    empty = Progress.wrap(None)
+    empty.notify(0.5, "nadie escucha")  # no-op, no revienta
+
+    seen: list[tuple[float, str]] = []
+    raw = Progress.wrap(lambda f, d: seen.append((f, d)))
+    assert isinstance(raw, Progress)
+    raw.notify(0.25, "hito")
+
+    assert seen == [(0.25, "hito")]
+    assert Progress.wrap(raw) is raw
+
+
+def test_progress_notify_clamps_fraction():
+    seen: list[tuple[float, str]] = []
+    sink = Progress(lambda f, d: seen.append((f, d)))
+
+    sink.notify(-0.5, "abajo")
+    sink.notify(1.5, "arriba")
+
+    assert seen == [(0.0, "abajo"), (1.0, "arriba")]
 
 
 def test_ollama_generate_reports_progress_without_bool_check():
