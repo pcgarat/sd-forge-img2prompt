@@ -53,9 +53,9 @@ SEQ_MIN_SCENES = 1
 SEQ_MAX_SCENES = 12
 SEQ_DEFAULT_SCENES = 2
 
-ANCHOR_WORDS_BOUNDS: tuple[int, int] = (20, 240)
+ANCHOR_WORDS_BOUNDS: tuple[int, int] = (20, 500)
 ANCHOR_WORDS_DEFAULT: tuple[int, int] = (50, 110)
-DELTA_WORDS_BOUNDS: tuple[int, int] = (4, 160)
+DELTA_WORDS_BOUNDS: tuple[int, int] = (4, 500)
 DELTA_WORDS_DEFAULT: tuple[int, int] = (10, 45)
 
 # Campos de la ficha de continuidad, en el orden en que se ensamblan.

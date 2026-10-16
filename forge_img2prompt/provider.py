@@ -268,6 +268,25 @@ def append_detail(base: str, detail: str) -> str:
     return f"{base} {detail}"
 
 
+def append_lora(prompt: str, lora: str) -> str:
+    """Pega el bloque de loras al final del prompt; vacío = sin cambios.
+
+    Las loras viajan como etiquetas («<lora:x:0.8>», tags sueltos) y deben
+    quedar tras la prosa, no fundidas en ella: se coloca una coma y se recorta
+    el punto final para que no aparezca «. ,».
+    """
+    base = " ".join((prompt or "").split()).strip()
+    extra = " ".join((lora or "").split()).strip().strip(",;").strip()
+    if not extra:
+        return base
+    base = base.rstrip(",;").rstrip()
+    if base and base[-1] in ".!?":
+        base = base[:-1].rstrip(",;").rstrip()
+    if not base:
+        return extra
+    return f"{base}, {extra}"
+
+
 def scene_context_snippet(base: str, *, max_chars: int = 280) -> str:
     """Short scene text for zone identity only (not a full prompt to retell)."""
     text = " ".join((base or "").split()).strip()

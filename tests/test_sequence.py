@@ -7,8 +7,10 @@ import pytest
 from forge_img2prompt.provider import LANG_EN, LANG_ES
 from forge_img2prompt.sequence import (
     ANCHOR_FIELDS,
+    ANCHOR_WORDS_BOUNDS,
     ANCHOR_WORDS_DEFAULT,
     DELTA_FIELDS,
+    DELTA_WORDS_BOUNDS,
     SEQ_MAX_SCENES,
     SEQ_MIN_SCENES,
     ConsistencyAnchor,
@@ -465,3 +467,8 @@ def test_delta_user_text_survives_empty_change():
 def test_defaults_are_reasonable():
     assert ANCHOR_WORDS_DEFAULT[0] < ANCHOR_WORDS_DEFAULT[1]
     assert SEQ_MIN_SCENES == 1
+
+
+def test_sequence_word_bounds_allow_500_words():
+    assert ANCHOR_WORDS_BOUNDS == (20, 500)
+    assert DELTA_WORDS_BOUNDS == (4, 500)
