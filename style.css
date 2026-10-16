@@ -161,6 +161,14 @@
 
 /* Hide Gradio bridge textboxes used by the dual-range JS */
 #img2prompt_gen_range,
-#img2prompt_det_range {
+#img2prompt_det_range,
+#img2prompt_seq_anchor_range,
+#img2prompt_seq_delta_range {
   display: none !important;
+}
+
+/* Secuencia: la caja de n prompts y los campos de la biblia respiran mejor */
+#img2prompt_seq_all textarea {
+  font-size: 0.9rem;
+  line-height: 1.35;
 }
