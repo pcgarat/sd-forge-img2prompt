@@ -1,0 +1,75 @@
+#!/bin/sh
+# Pre-commit: ejecuta los tests sobre el ÍNDICE, no sobre el working tree.
+#
+# Con varios agentes o editores trabajando a la vez, `pytest` sobre el working
+# tree puede dar verde mientras el commit deja el repo roto: es lo que pasó con
+# `progress.py`, importado desde cuatro módulos sin llegar a estar rastreado (un
+# checkout limpio de aquel commit arrancaba con ModuleNotFoundError).
+# Materializar el índice reproduce exactamente lo que se va a commitear.
+#
+# Instalación (una vez por clon): git config core.hooksPath .githooks
+
+set -eu
+
+# Sin cambios en Python no hay nada que validar: los commits de docs no pagan 2 s.
+if [ -z "$(git diff --cached --name-only --diff-filter=ACMR -- '*.py')" ]; then
+    exit 0
+fi
+
+# Interpretador con pytest disponible. `python -m pytest --version` también
+# verifica el arranque: con un entorno roto (plugins de terceros que rompen el
+# import en esta máquina) degradamos a PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 en vez
+# de fallar el commit por un problema del host.
+PY=""
+AUTOLOAD=""
+for cand in python3 python; do
+    command -v "$cand" >/dev/null 2>&1 || continue
+    "$cand" -c "import pytest" >/dev/null 2>&1 || continue
+    PY="$cand"
+    "$cand" -m pytest --version >/dev/null 2>&1 || AUTOLOAD="PYTEST_DISABLE_PLUGIN_AUTOLOAD=1"
+    break
+done
+
+if [ -z "$PY" ]; then
+    echo "pre-commit: no encuentro pytest en el PATH; me salto los tests." >&2
+    exit 0
+fi
+
+tmp="$(mktemp -d)"
+trap 'rm -rf "$tmp"' EXIT INT TERM
+
+if ! git checkout-index -a --prefix="$tmp/" 2>/dev/null; then
+    echo "pre-commit: no pude materializar el índice; me salto los tests." >&2
+    exit 0
+fi
+
+out=""
+set +e
+( cd "$tmp" && env ${AUTOLOAD:+$AUTOLOAD} "$PY" -m pytest tests -q ) >"$tmp/.pytest.out" 2>&1
+status=$?
+set -e
+
+if [ "$status" -eq 0 ]; then
+    echo "pre-commit: tests OK sobre el índice ($(tail -n 1 "$tmp/.pytest.out"))"
+    exit 0
+fi
+
+out="$(cat "$tmp/.pytest.out")"
+
+# Códigos de pytest: 0 OK · 1 tests rojos · 2 interrumpido (incluye errores de
+# colección) · 3 error interno · 4 error de uso · 5 sin tests recogidos.
+# Un 3/4/5 es un problema del entorno, no del diff: no bloqueamos el commit.
+# Un 2 sí bloquea, y es el caso que motiva el hook: un import que falta por no
+# haber hecho `git add` aparece como error de colección.
+if [ "$status" -eq 3 ] || [ "$status" -eq 4 ] || [ "$status" -eq 5 ]; then
+    printf '%s\n' "$out" | tail -n 15 >&2
+    echo "pre-commit: pytest no pudo ejecutar los tests (exit $status); commit permitido." >&2
+    exit 0
+fi
+
+printf '%s\n' "$out" | tail -n 30 >&2
+echo "" >&2
+echo "pre-commit: los tests fallan sobre lo que vas a commitear." >&2
+echo "El hook prueba el índice, no el working tree: revisa que todo lo que" >&2
+echo "importas esté añadido (git add) además de guardado en disco." >&2
+exit 1
