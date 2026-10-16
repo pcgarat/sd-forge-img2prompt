@@ -251,6 +251,11 @@ def on_ui_tabs():
     seq_a_hi = int(prefs["seq_anchor_wmax"])
     seq_d_lo = int(prefs["seq_delta_wmin"])
     seq_d_hi = int(prefs["seq_delta_wmax"])
+    saved_gen_loras = str(prefs.get("gen_loras") or "")
+    saved_seq_loras = list(prefs.get("seq_loras") or [])
+
+    def _saved_lora(index: int) -> str:
+        return saved_seq_loras[index] if index < len(saved_seq_loras) else ""
 
     with gr.Blocks(analytics_enabled=False) as ui:
         gr.Markdown(
@@ -317,6 +322,7 @@ def on_ui_tabs():
                     gen_loras = gr.Textbox(
                         label="Loras (se pegan al final del prompt)",
                         lines=1,
+                        value=saved_gen_loras,
                         placeholder="<lora:nombre:0.8>, tag_estilo…",
                     )
                     gr.Markdown(
@@ -474,6 +480,7 @@ def on_ui_tabs():
                         gr.Textbox(
                             label="Loras escena 1 (se pegan al final de su prompt)",
                             lines=1,
+                            value=_saved_lora(0),
                             placeholder="<lora:nombre:0.8>, tag_estilo…",
                         )
                     ]
@@ -491,6 +498,7 @@ def on_ui_tabs():
                             gr.Textbox(
                                 label=f"Loras escena {_i + 1} (se pegan al final de su prompt)",
                                 lines=1,
+                                value=_saved_lora(_i),
                                 visible=_i < default_seq,
                                 placeholder="<lora:nombre:0.8>, tag_estilo…",
                             )
@@ -695,6 +703,8 @@ def on_ui_tabs():
             seq_anchor_raw: str = "",
             seq_delta_raw: str = "",
             seq_scenes: float = SEQ_DEFAULT_SCENES,
+            gen_loras_val: str = "",
+            *seq_loras_vals: str,
         ):
             g_lo, g_hi = parse_range_text(
                 gen_raw, bounds=GEN_WORDS_BOUNDS, default=GEN_WORDS_DEFAULT
@@ -724,6 +734,8 @@ def on_ui_tabs():
                     "seq_anchor_wmax": s_a_hi,
                     "seq_delta_wmin": s_d_lo,
                     "seq_delta_wmax": s_d_hi,
+                    "gen_loras": str(gen_loras_val or ""),
+                    "seq_loras": [str(v or "") for v in seq_loras_vals],
                 },
             )
             return None
@@ -1025,21 +1037,35 @@ def on_ui_tabs():
             inputs=[image],
             outputs=[crop_preview],
         )
-        for src in (gen_range, det_range, det_overlap, lang_dd, strategy_dd, vl_dd):
-            src.change(
-                fn=_persist_prefs,
-                inputs=[
-                    gen_range,
-                    det_range,
-                    det_overlap,
-                    lang_dd,
-                    strategy_dd,
-                    vl_dd,
-                    seq_anchor_range,
-                    seq_delta_range,
-                    seq_count,
-                ],
-            )
+        _PREFS_INPUTS = [
+            gen_range,
+            det_range,
+            det_overlap,
+            lang_dd,
+            strategy_dd,
+            vl_dd,
+            seq_anchor_range,
+            seq_delta_range,
+            seq_count,
+            gen_loras,
+            *seq_loras,
+        ]
+        for src in (
+            gen_range,
+            det_range,
+            det_overlap,
+            lang_dd,
+            strategy_dd,
+            vl_dd,
+            seq_anchor_range,
+            seq_delta_range,
+            seq_count,
+            seq_goal,
+            *seq_boxes,
+            gen_loras,
+            *seq_loras,
+        ):
+            src.change(fn=_persist_prefs, inputs=_PREFS_INPUTS)
         # --- Secuencia -----------------------------------------------------
         _SEQ_IN_SCENE = [seq_goal, *seq_boxes]
         _SEQ_IN_LORA = list(seq_loras)
@@ -1117,21 +1143,6 @@ def on_ui_tabs():
             inputs=[seq_scene_dd, seq_prompts],
             outputs=[prompt_out],
         )
-        for _extra in (seq_anchor_range, seq_delta_range, seq_count, seq_goal, *seq_boxes):
-            _extra.change(
-                fn=_persist_prefs,
-                inputs=[
-                    gen_range,
-                    det_range,
-                    det_overlap,
-                    lang_dd,
-                    strategy_dd,
-                    vl_dd,
-                    seq_anchor_range,
-                    seq_delta_range,
-                    seq_count,
-                ],
-            )
         # Forge Neo = Gradio 4.x → parámetro `js` (no `_js`).
         # El preprocesador fuerza el valor del dual-range al payload del click.
         _JS_SYNC_GEN = """

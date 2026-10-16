@@ -33,7 +33,8 @@ Reproducir o reinterpretar una imagen no debería empezar desde cero en un cuadr
 2. Abre la pestaña **Image → Prompt**.
 3. Sube o pega la imagen de referencia.
 4. (Opcional) Añade notas de dirección creativa. Si usas LoRAs, pega su bloque
-   (`<lora:nombre:0.8>, …`) en el campo **Loras**: se añade al final del prompt.
+   (`<lora:nombre:0.8>, …`) en el campo **Loras**: se añade al final del prompt
+   y se guarda entre reinicios.
 5. **Generate** — prompt en prosa + hints de sampler.
 6. (Opcional) Pinta una zona y **Añadir detalle** — texto solo en *Prompt de la zona*.
 7. **Send to txt2img** o **img2img**.
@@ -168,7 +169,8 @@ campo.
   final del prompt de esa escena y se conserva al **Recomponer**.
 - **Biblia editable**: corrige «camiseta gris» → «camiseta verde» y pulsa
   **Recomponer** para actualizar los n prompts **sin volver a llamar al modelo**.
-- Dos sliders de longitud: palabras de la biblia y palabras del cambio.
+- Dos sliders de longitud (máx. 500 palabras): biblia y cambio por escena.
+  Sliders y campos **Loras** se guardan solos entre reinicios.
 - **Escena a enviar → Prompt**: copia una escena al prompt de la pestaña para
   iterarla con **Añadir detalle** o enviarla a txt2img.
 - Avisos de coherencia: escenas casi idénticas, cambios que repiten la biblia,

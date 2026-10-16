@@ -26,6 +26,7 @@ from forge_img2prompt.sequence import (
     DELTA_WORDS_BOUNDS,
     DELTA_WORDS_DEFAULT,
     SEQ_DEFAULT_SCENES,
+    SEQ_MAX_SCENES,
     clamp_scene_count,
 )
 
@@ -45,7 +46,22 @@ _DEFAULTS: dict[str, Any] = {
     "seq_anchor_wmax": ANCHOR_WORDS_DEFAULT[1],
     "seq_delta_wmin": DELTA_WORDS_DEFAULT[0],
     "seq_delta_wmax": DELTA_WORDS_DEFAULT[1],
+    "gen_loras": "",
+    "seq_loras": [],
 }
+
+
+def _lora_slots(value: Any) -> list[str]:
+    """Lista de loras de longitud fija ``SEQ_MAX_SCENES`` (índice = escena)."""
+    items = list(value) if isinstance(value, (list, tuple)) else []
+    out = [str(v or "").strip() for v in items[:SEQ_MAX_SCENES]]
+    out.extend([""] * (SEQ_MAX_SCENES - len(out)))
+    return out
+
+
+def _normalize_loras(data: dict[str, Any]) -> None:
+    data["gen_loras"] = str(data.get("gen_loras") or "")
+    data["seq_loras"] = _lora_slots(data.get("seq_loras"))
 
 
 def prefs_path(ext_dir: str | Path) -> Path:
@@ -55,15 +71,14 @@ def prefs_path(ext_dir: str | Path) -> Path:
 def load_prefs(ext_dir: str | Path) -> dict[str, Any]:
     path = prefs_path(ext_dir)
     data = dict(_DEFAULTS)
-    if not path.is_file():
-        return data
-    try:
-        raw = json.loads(path.read_text(encoding="utf-8"))
-        if isinstance(raw, dict):
-            data.update({k: raw[k] for k in _DEFAULTS if k in raw})
-    except Exception as exc:  # noqa: BLE001
-        log(f"prefs: no se pudo leer `{path}` ({exc}); defaults")
-        return dict(_DEFAULTS)
+    if path.is_file():
+        try:
+            raw = json.loads(path.read_text(encoding="utf-8"))
+            if isinstance(raw, dict):
+                data.update({k: raw[k] for k in _DEFAULTS if k in raw})
+        except Exception as exc:  # noqa: BLE001
+            log(f"prefs: no se pudo leer `{path}` ({exc}); defaults")
+            data = dict(_DEFAULTS)
 
     g_lo, g_hi = clamp_word_range(
         data.get("gen_wmin"),
@@ -99,6 +114,7 @@ def load_prefs(ext_dir: str | Path) -> dict[str, Any]:
     data["language"] = lang if lang in ("es", "en") else DEFAULT_LANG
     data["strategy"] = normalize_strategy(data.get("strategy"))
     data["vl_value"] = str(data.get("vl_value") or "")
+    _normalize_loras(data)
     return data
 
 
@@ -136,6 +152,7 @@ def save_prefs(ext_dir: str | Path, updates: dict[str, Any]) -> dict[str, Any]:
     current["seq_delta_wmin"], current["seq_delta_wmax"] = s_lo, s_hi
     current["seq_scenes"] = clamp_scene_count(current.get("seq_scenes"))
     current["strategy"] = normalize_strategy(current.get("strategy"))
+    _normalize_loras(current)
     path = prefs_path(ext_dir)
     try:
         path.write_text(
