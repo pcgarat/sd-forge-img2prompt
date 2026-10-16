@@ -67,6 +67,7 @@ forge_img2prompt/
   ollama_client.py             # /api/chat + list_vision_models
   ollama_vl.py                 # caption/detail vía Ollama
   mask_crop.py                 # ImageEditor brush → crop enmascarado
+  sequence.py                  # biblia de continuidad + deltas → n prompts
   log.py                       # [img2prompt] en terminal Forge
 ```
 
@@ -343,6 +344,37 @@ flowchart TB
 - **Strategy** ya está (`PromptProvider`); un provider GGUF/llama.cpp sería otra implementación.
 - **Adapter** para el valor Gradio del `ImageEditor` (ya encapsulado en `mask_crop`).
 - **Null Object** / status codes tipados en lugar de strings largos en `PromptResult.status` si la UI se complica.
+
+### 7.1 Secuencia (n prompts)
+
+El acordeón **Secuencia** no genera una imagen: genera **n prompts** pensados
+para parecer fotogramas de la misma escena. Dos fases de LLM y un ensamblado
+determinista:
+
+```mermaid
+flowchart LR
+  Goal[Objetivo escena 1] --> F1["Fase 1<br/>biblia JSON"]
+  F1 --> Anchor["ConsistencyAnchor<br/>sujeto · ropa · props · lugar · luz · paleta · cámara"]
+  Changes[Cambios 2..n] --> F2["Fase 2<br/>delta JSON"]
+  Anchor --> Compose["compose_prompt<br/>biblia literal + delta"]
+  F2 --> Compose
+  Compose --> Prompts["n prompts"]
+```
+
+La clave: el LLM fija los campos continuos **una vez** y se reinyectan palabra
+por palabra. Pedirle que los reescriba escena a escena garantiza deriva
+(«castaño» → «marrón» → «cobrizo»). El delta solo aporta `action` y overrides de
+`props`/`lighting`/`palette`/`camera` cuando ese aspecto cambia de verdad.
+
+- `handle` recibe `run(system, user, max_tokens)` → agnóstico del backend.
+- Cada provider expone `sequence()`: `OllamaVLProvider` (compartido con NaN) y
+  `QwenVLProvider` (carga única para toda la secuencia).
+- `state_payload` + `recompose` rehacen los n prompts con la biblia editada
+  **sin LLM**: `gr.State` guarda la biblia y el delta con el texto de origen de
+  cada caja.
+- Degradación: si la biblia falla, cada prompt queda `objetivo + cambio` en vez
+  de abortar, con aviso en el status.
+- Detalle completo: [`spec-secuencia-prompts_16-10-2026.md`](spec-secuencia-prompts_16-10-2026.md).
 
 ---
 

@@ -142,6 +142,39 @@ Diseñado para iterar ropa, manos, objetos o focos sin reescribir toda la escena
 
 ---
 
+## Secuencia de n prompts
+
+Genera **n imágenes que parecen la misma secuencia** en lugar de n imágenes
+sueltas. En la escena 1 escribes qué quieres conseguir; en cada escena extra,
+**solo lo que cambia**:
+
+```text
+Escena 1 · objetivo   hombre bostezando en la cama, habitación de los 90 juvenil, amanece
+Escena 2 · qué cambia  el hombre se sienta al borde de la cama
+Escena 3 · qué cambia  el hombre se pone de pie para vestirse
+Escena 4 · qué cambia  el hombre abre la persiana
+```
+
+El modelo inventa los detalles concretos (sujeto, ropa, decorado, luz, paleta,
+óptica) **una sola vez** y los fija en la **biblia de continuidad**. Esa biblia se
+repite palabra por palabra en los n prompts, así que todo lo que aparece se
+describe igual en todas las imágenes. El delta de cada escena solo aporta la
+acción y, si de verdad cambia algo (hora del día, encuadre), el override de ese
+campo.
+
+- Botones `+` / `−` para añadir y quitar escenas (hasta 12).
+- **Biblia editable**: corrige «camiseta gris» → «camiseta verde» y pulsa
+  **Recomponer** para actualizar los n prompts **sin volver a llamar al modelo**.
+- Dos sliders de longitud: palabras de la biblia y palabras del cambio.
+- **Escena a enviar → Prompt**: copia una escena al prompt de la pestaña para
+  iterarla con **Añadir detalle** o enviarla a txt2img.
+- Avisos de coherencia: escenas casi idénticas, cambios que repiten la biblia,
+  campos que se pasan del presupuesto.
+
+Detalle en [spec de secuencia](docs/spec-secuencia-prompts_16-10-2026.md).
+
+---
+
 ## Stacks soportados
 
 | Stack | Detección | Hints típicos |
@@ -203,6 +236,7 @@ Si Forge corre en contenedor y Ollama en el host:
 | [Forge Neo](https://github.com/Haoming02/sd-webui-forge-classic/tree/neo) | Runtime objetivo (rama `neo`) |
 | [Documentación extendida](docs/guia_desarrollador_img2prompt_26-09-2026.md) | Arquitectura, flujos, contratos UI ↔ providers |
 | [Spec producto](docs/spec-forge-neo-img2prompt_25-09-2026.md) | Alcance y criterios de aceptación |
+| [Spec secuencia](docs/spec-secuencia-prompts_16-10-2026.md) | Biblia de continuidad + deltas: reglas de coherencia |
 | [Spec backend Ollama](docs/spec-ollama-backend_26-09-2026.md) | API nativa `/api/chat` + visión |
 | [Spec backend NaN](docs/spec-nan-backend_09-10-2026.md) | API OpenAI-compatible del clúster NaN |
 
