@@ -20,6 +20,14 @@ from forge_img2prompt.provider import (
     clamp_word_range,
     normalize_strategy,
 )
+from forge_img2prompt.sequence import (
+    ANCHOR_WORDS_BOUNDS,
+    ANCHOR_WORDS_DEFAULT,
+    DELTA_WORDS_BOUNDS,
+    DELTA_WORDS_DEFAULT,
+    SEQ_DEFAULT_SCENES,
+    clamp_scene_count,
+)
 
 _PREFS_NAME = "ui_prefs.json"
 
@@ -32,6 +40,11 @@ _DEFAULTS: dict[str, Any] = {
     "language": DEFAULT_LANG,
     "strategy": DEFAULT_STRATEGY,
     "vl_value": "",
+    "seq_scenes": SEQ_DEFAULT_SCENES,
+    "seq_anchor_wmin": ANCHOR_WORDS_DEFAULT[0],
+    "seq_anchor_wmax": ANCHOR_WORDS_DEFAULT[1],
+    "seq_delta_wmin": DELTA_WORDS_DEFAULT[0],
+    "seq_delta_wmax": DELTA_WORDS_DEFAULT[1],
 }
 
 
@@ -67,6 +80,21 @@ def load_prefs(ext_dir: str | Path) -> dict[str, Any]:
     data["gen_wmin"], data["gen_wmax"] = g_lo, g_hi
     data["det_wmin"], data["det_wmax"] = d_lo, d_hi
     data["det_overlap"] = clamp_overlap_discard(data.get("det_overlap"))
+    a_lo, a_hi = clamp_word_range(
+        data.get("seq_anchor_wmin"),
+        data.get("seq_anchor_wmax"),
+        bounds=ANCHOR_WORDS_BOUNDS,
+        default=ANCHOR_WORDS_DEFAULT,
+    )
+    s_lo, s_hi = clamp_word_range(
+        data.get("seq_delta_wmin"),
+        data.get("seq_delta_wmax"),
+        bounds=DELTA_WORDS_BOUNDS,
+        default=DELTA_WORDS_DEFAULT,
+    )
+    data["seq_anchor_wmin"], data["seq_anchor_wmax"] = a_lo, a_hi
+    data["seq_delta_wmin"], data["seq_delta_wmax"] = s_lo, s_hi
+    data["seq_scenes"] = clamp_scene_count(data.get("seq_scenes"))
     lang = str(data.get("language") or DEFAULT_LANG).strip().lower()
     data["language"] = lang if lang in ("es", "en") else DEFAULT_LANG
     data["strategy"] = normalize_strategy(data.get("strategy"))
@@ -92,6 +120,21 @@ def save_prefs(ext_dir: str | Path, updates: dict[str, Any]) -> dict[str, Any]:
     current["gen_wmin"], current["gen_wmax"] = g_lo, g_hi
     current["det_wmin"], current["det_wmax"] = d_lo, d_hi
     current["det_overlap"] = clamp_overlap_discard(current.get("det_overlap"))
+    a_lo, a_hi = clamp_word_range(
+        current.get("seq_anchor_wmin"),
+        current.get("seq_anchor_wmax"),
+        bounds=ANCHOR_WORDS_BOUNDS,
+        default=ANCHOR_WORDS_DEFAULT,
+    )
+    s_lo, s_hi = clamp_word_range(
+        current.get("seq_delta_wmin"),
+        current.get("seq_delta_wmax"),
+        bounds=DELTA_WORDS_BOUNDS,
+        default=DELTA_WORDS_DEFAULT,
+    )
+    current["seq_anchor_wmin"], current["seq_anchor_wmax"] = a_lo, a_hi
+    current["seq_delta_wmin"], current["seq_delta_wmax"] = s_lo, s_hi
+    current["seq_scenes"] = clamp_scene_count(current.get("seq_scenes"))
     current["strategy"] = normalize_strategy(current.get("strategy"))
     path = prefs_path(ext_dir)
     try:

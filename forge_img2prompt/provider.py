@@ -471,6 +471,50 @@ def strategy_label(strategy: str | None) -> str:
     return STRATEGY_REGISTRY.label(strategy)
 
 
+_LANG_INSTRUCTIONS: dict[str, str] = {
+    LANG_ES: (
+        "Write the entire prompt in Spanish (Castilian). "
+        "Do not mix English except for unavoidable brand names "
+        "or on-image text that is actually visible (then use «quotes»)."
+    ),
+    LANG_EN: (
+        "Write the entire prompt in English. "
+        "Quote on-image text only when it is actually visible."
+    ),
+}
+
+
+def language_instruction(language: str | None) -> str:
+    """Idioma de salida; vive aquí para que la lógica pura no importe torch."""
+    return _LANG_INSTRUCTIONS[normalize_language(language)]
+
+
+def word_range_instruction(word_min: int, word_max: int) -> str:
+    if word_min == word_max:
+        return (
+            f"LENGTH (mandatory, from UI sliders): write exactly {word_min} words "
+            "(count them; no more, no fewer). Ignore any other length habit."
+        )
+    return (
+        f"LENGTH (mandatory, from UI sliders): write between {word_min} and {word_max} "
+        "words inclusive (count carefully; stay inside this range). "
+        "Ignore any other length habit."
+    )
+
+
+def family_hint(family: str) -> str:
+    if family == "klein9b":
+        return (
+            "Target FLUX.2 Klein 9B: keep spatial relations explicit; concrete nouns, "
+            "lighting direction and materials."
+        )
+    return (
+        "Target Krea 2: emphasize composition, lighting and materials "
+        "with concrete, information-dense language."
+    )
+
+
+
 @dataclass(frozen=True)
 class PromptResult:
     prompt: str

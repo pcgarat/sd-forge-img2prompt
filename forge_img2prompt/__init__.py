@@ -21,6 +21,18 @@ from forge_img2prompt.provider import (
     shared_content_count,
 )
 from forge_img2prompt.ollama_vl import NanVLProvider, OllamaVLProvider
+from forge_img2prompt.sequence import (
+    ANCHOR_FIELDS,
+    ConsistencyAnchor,
+    SceneDelta,
+    SequenceRequest,
+    SequenceResult,
+    compose_prompt,
+    compose_sequence,
+    handle,
+    recompose,
+    state_payload,
+)
 from forge_img2prompt.stack import StackInfo, detect_stack
 from forge_img2prompt.vl_catalog import VlModelChoice, list_vl_models
 from forge_img2prompt.vl_provider import CompositeProvider, QwenVLProvider
@@ -37,7 +49,17 @@ __all__ = [
     "OllamaVLProvider",
     "StackInfo",
     "VlModelChoice",
+    "ConsistencyAnchor",
+    "SceneDelta",
+    "SequenceRequest",
+    "SequenceResult",
+    "ANCHOR_FIELDS",
     "append_detail",
+    "compose_prompt",
+    "compose_sequence",
+    "handle",
+    "recompose",
+    "state_payload",
     "clamp_overlap_discard",
     "clamp_text_to_words",
     "clamp_word_range",
