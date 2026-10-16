@@ -32,7 +32,8 @@ Reproducir o reinterpretar una imagen no debería empezar desde cero en un cuadr
 1. Carga un preset **Krea 2** o **Klein 9B** en Forge Neo.
 2. Abre la pestaña **Image → Prompt**.
 3. Sube o pega la imagen de referencia.
-4. (Opcional) Añade notas de dirección creativa.
+4. (Opcional) Añade notas de dirección creativa. Si usas LoRAs, pega su bloque
+   (`<lora:nombre:0.8>, …`) en el campo **Loras**: se añade al final del prompt.
 5. **Generate** — prompt en prosa + hints de sampler.
 6. (Opcional) Pinta una zona y **Añadir detalle** — texto solo en *Prompt de la zona*.
 7. **Send to txt2img** o **img2img**.
@@ -163,6 +164,8 @@ acción y, si de verdad cambia algo (hora del día, encuadre), el override de es
 campo.
 
 - Botones `+` / `−` para añadir y quitar escenas (hasta 12).
+- **Loras por escena**: cada caja tiene su campo **Loras**; su texto se pega al
+  final del prompt de esa escena y se conserva al **Recomponer**.
 - **Biblia editable**: corrige «camiseta gris» → «camiseta verde» y pulsa
   **Recomponer** para actualizar los n prompts **sin volver a llamar al modelo**.
 - Dos sliders de longitud: palabras de la biblia y palabras del cambio.
@@ -247,8 +250,11 @@ Si Forge corre en contenedor y Ollama en el host:
 ```bash
 git clone https://github.com/pcgarat/sd-forge-img2prompt.git
 cd sd-forge-img2prompt
+git config core.hooksPath .githooks   # activa el pre-commit (una vez por clon)
 python -m pytest tests -q
 ```
+
+El `pre-commit` ejecuta los tests **sobre el índice** (`git checkout-index` a un temporal), no sobre el working tree: valida lo que realmente se va a commitear, no lo que hay guardado en disco. Así detecta un fichero nuevo que se importa pero se queda sin `git add` — el commit queda siempre verde en un checkout limpio. Si no hay cambios en `.py`, no hace nada.
 
 Con **docker-neo**: monta el repo con `IMG2PROMPT_EXT_PATH` y reinicia el stack. Evita symlinks desde `EXTENSIONS_PATH` hacia rutas fuera del volumen del contenedor.
 
