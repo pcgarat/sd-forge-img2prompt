@@ -27,6 +27,7 @@ from dataclasses import dataclass, replace
 from typing import Any, Callable, Mapping
 
 from forge_img2prompt.log import log
+from forge_img2prompt.progress import Progress, ProgressLike
 from forge_img2prompt.provider import (
     DEFAULT_LANG,
     DEFAULT_STRATEGY,
@@ -290,21 +291,60 @@ def _clean_phrase(text: str) -> str:
     return " ".join((text or "").split()).strip().strip(_PUNCT_EDGE)
 
 
-def _join_segments(segments: Any) -> str:
-    out: list[str] = []
-    seen: set[str] = set()
-    for seg in segments:
-        cleaned = _clean_phrase(str(seg or ""))
-        if not cleaned:
+_MIN_DEDUPE_CHARS = 8
+
+
+def _dedupe_against(segments: list[str]) -> None:
+    """Vacía un segmento que ya está contenido en otro (biblia ↔ delta).
+
+    El solape va en las dos direcciones: el modelo re-describe el sujeto en la
+    acción, y el delta repite un objeto que ya está en el decorado. Se aplica
+    solo al segmento más corto de cada pareja para no amputar un texto rico (la
+    acción) cuando la biblia es un sustantivo suelto.
+    """
+    lowered = [seg.casefold() for seg in segments]
+    for i, low in enumerate(lowered):
+        if not low or len(segments[i]) < _MIN_DEDUPE_CHARS:
             continue
-        key = cleaned.casefold()
+        for j in range(len(segments)):
+            if i == j or not lowered[j]:
+                continue
+            other = lowered[j]
+            if low not in other and other not in low:
+                continue
+            # El más corto cede; a igualdad, cede el posterior (el delta).
+            mine, theirs = len(segments[i]), len(segments[j])
+            if mine < theirs:
+                loser = i
+            elif theirs < mine:
+                loser = j
+            else:
+                loser = max(i, j)
+            segments[loser] = ""
+            lowered[loser] = ""
+            if loser == i:
+                break
+
+
+def _join_segments(segments: Any) -> str:
+    parts = [_clean_phrase(str(seg or "")) for seg in segments]
+    parts = [p for p in parts if p]
+    if not parts:
+        return ""
+    _dedupe_against(parts)
+    kept: list[str] = []
+    seen: set[str] = set()
+    for part in parts:
+        if not part:
+            continue
+        key = part.casefold()
         if key in seen:
             continue
         seen.add(key)
-        out.append(cleaned)
-    if not out:
+        kept.append(part)
+    if not kept:
         return ""
-    text = ", ".join(out)
+    text = ", ".join(kept)
     return text[0].upper() + text[1:] + "."
 
 
@@ -572,7 +612,6 @@ def _strategy_hint(strategy: str | None) -> str:
 # --- Motor ------------------------------------------------------------------
 
 RunFn = Callable[[str, str, int], str]
-ProgressCb = Callable[[float, str], None]
 
 
 def _bible_tokens(word_max: int) -> int:
@@ -588,7 +627,7 @@ def handle(
     request: SequenceRequest,
     run: RunFn,
     *,
-    progress: ProgressCb | None = None,
+    progress: ProgressLike = None,
     service: str = "",
 ) -> SequenceResult:
     """Ejecuta las dos fases sobre un ``run(system, user, max_tokens)`` cualquiera.
@@ -597,6 +636,7 @@ def handle(
     agnóstica (Ollama, NaN, transformers o un doble de test). Un fallo del
     backend no aborta la secuencia: se degrada a «escena 1 + cambio» y se avisa.
     """
+    sink = Progress.wrap(progress)
     lang = normalize_language(request.language)
     strategy = normalize_strategy(request.strategy)
     goal = _clean_phrase(request.goal)
@@ -625,10 +665,7 @@ def handle(
     done = 0
 
     def report(desc: str) -> None:
-        # Identidad, nunca verdad: ``gr.Progress`` implementa ``__len__`` sobre
-        # una lista vacía y revienta al evaluarlo como booleano.
-        if progress is not None:
-            progress(min(done / max(total_steps, 1), 1.0), desc)
+        sink.notify(done / max(total_steps, 1), desc)
 
     def invoke(system: str, user: str, tokens: int) -> str | None:
         if backend_down:
@@ -740,24 +777,36 @@ def continuity_notes(
     *,
     anchor_word_max: int = ANCHOR_WORDS_DEFAULT[1],
 ) -> list[str]:
-    """Avisos accionables de coherencia; no corrige, informa."""
+    """Avisos accionables de coherencia; no corrige, informa.
+
+    Dos señales distintas que es fácil confundir:
+
+    - **Cambio corto que cita la biblia** (el usuario escribió «abre la
+      persiana»): el delta solo reescribe el canvas, que es exactamente lo que
+      queremos. No se avisa.
+    - **Cambio largo que re-describe la escena** (el modelo se fue de la mano):
+      eso sí arriesga deriva y se avisa por palabra neta, no por solape.
+    """
     notes: list[str] = []
     anchor_text = anchor.as_prose()
-    if anchor_text and count_words(anchor_text) > anchor_word_max:
+    anchor_words = count_words(anchor_text)
+    if anchor_text and anchor_words > anchor_word_max:
         notes.append(
-            f"La biblia ocupa {count_words(anchor_text)} palabras (máx {anchor_word_max}); "
+            f"La biblia ocupa {anchor_words} palabras (máx {anchor_word_max}); "
             "recorta campos para que quepa el cambio de cada escena."
         )
     for i, delta in enumerate(deltas, start=1):
         if not delta.action:
             notes.append(f"Escena {i} sin acción: quedará casi idéntica a la anterior.")
-        elif anchor_text:
-            shared = shared_content_count(anchor_text, delta.action)
-            if shared >= 6:
-                notes.append(
-                    f"Escena {i}: el cambio repite {shared} palabras de la biblia "
-                    "(describe solo lo que cambia)."
-                )
+            continue
+        # La señal es cuánta biblia reescribe el cambio, no cuánto ocupa: un
+        # cambio corto que cita «cama» o «moqueta» es precisamente lo esperado.
+        shared = shared_content_count(anchor_text, delta.action)
+        if anchor_text and shared >= max(anchor_words // 2, 6):
+            notes.append(
+                f"Escena {i}: el cambio ({count_words(delta.action)} palabras) reescribe "
+                f"la biblia ({shared} palabras coincidentes); describe solo lo que cambia."
+            )
     for i in range(1, len(prompts)):
         prev, cur = prompts[i - 1], prompts[i]
         if not cur:

@@ -148,6 +148,81 @@ def test_compose_prompt_dedupes_repeated_segments():
     assert prompt.count("Un chico con gorra") == 1
 
 
+def test_compose_prompt_keeps_rich_action_that_mentions_subject():
+    """La acción rica gana: no se amputa por citar el sujeto corto de la biblia."""
+    anchor = ConsistencyAnchor(subject="el hombre", setting="una cocina")
+    prompt = compose_prompt(
+        anchor,
+        SceneDelta(action="el hombre se sienta en el borde de la cama y bosteza"),
+    )
+    assert "se sienta en el borde de la cama" in prompt
+    assert prompt.lower().count("el hombre") == 1  # el sujeto suelto cede
+    assert "una cocina" in prompt
+
+
+def test_compose_prompt_drops_prop_already_in_setting():
+    """Un delta que repite un objeto del decorado no lo duplica."""
+    anchor = ConsistencyAnchor(setting="habitación con moqueta gris y póster")
+    prompt = compose_prompt(anchor, SceneDelta(action="camina", props="moqueta gris"))
+    assert prompt.count("moqueta gris") == 1
+
+
+def test_compose_prompt_keeps_distinct_segments():
+    """El dedupe no debe comerse segmentos que solo comparten palabras."""
+    anchor = ConsistencyAnchor(subject="Un chico alto", setting="Una calle estrecha")
+    prompt = compose_prompt(anchor, SceneDelta(action="corre hacia la salida"))
+    assert "Un chico alto" in prompt
+    assert "Una calle estrecha" in prompt
+    assert "corre hacia la salida" in prompt
+
+
+def test_compose_sequence_every_anchor_field_verbatim_in_all_prompts():
+    """La garantía central: cada campo del ancla aparece literal en los n prompts.
+
+    Dos matices deliberados:
+
+    - El ancla **no** es un bloque contiguo: la acción se intercala por el orden
+      dentro→fuera, así que se comprueba campo a campo.
+    - La primera letra del prompt se capitaliza, y eso puede tocar al ``subject``
+      («hombre joven» → «Hombre joven»). Es la **única** alteración permitida al
+      ancla; todo lo demás va byte a byte.
+    """
+    anchor = ConsistencyAnchor(
+        subject="hombre joven de piel clara, pelo castaño corto y revuelto",
+        wardrobe="camiseta de algodón gris con cuello redondo",
+        props="cama individual con sábanas de franela azul a cuadros",
+        setting="habitación juvenil de los 90 con papel pintado de rayas azules",
+        lighting="luz de amanecer cálida y rasante desde la ventana derecha",
+        palette="azul claro, beige, ámbar cálido",
+        camera="objetivo de 35 mm, plano medio desde el lateral",
+    )
+    deltas = (
+        SceneDelta(action="el hombre bosteza con la boca abierta"),
+        SceneDelta(action="el hombre se incorpora y se sienta en el borde de la cama"),
+        SceneDelta(action="el hombre aparta las sábanas y se pone de pie"),
+    )
+    for prompt in compose_sequence(anchor, deltas):
+        low = prompt.lower()
+        for key in ANCHOR_FIELDS:
+            assert anchor.field(key).lower() in low, f"campo {key} no literal en: {prompt}"
+
+
+def test_compose_sequence_override_replaces_only_that_field():
+    anchor = ConsistencyAnchor(
+        subject="un chico",
+        lighting="luz de amanecer",
+        camera="plano medio",
+    )
+    deltas = (SceneDelta(action="duerme"), SceneDelta(action="abre la persiana", lighting="luz de mediodía"))
+    prompts = compose_sequence(anchor, deltas)
+    assert "luz de amanecer" in prompts[0]
+    assert "luz de amanecer" not in prompts[1]
+    assert "luz de mediodía" in prompts[1]
+    # Lo no sobrescrito sigue literal en la escena con override.
+    assert "Un chico" in prompts[1] or "un chico" in prompts[1]
+    assert "plano medio" in prompts[1]
+
+
 def test_compose_sequence_repeats_anchor_verbatim():
     anchor = ConsistencyAnchor(subject="Andrea", setting="Un taller", camera="35mm")
     prompts = compose_sequence(
@@ -290,6 +365,33 @@ def test_recompose_manual_anchor_without_backend():
     for prompt in rebuilt.prompts:
         assert "Un pescador" in prompt
         assert "Un muelle" in prompt
+
+
+def test_continuity_notes_ignores_short_change_citing_anchor():
+    """Un cambio corto que cita la biblia es lo esperado: no avisa."""
+    anchor = ConsistencyAnchor(
+        subject="un hombre joven",
+        props="cama con sábanas arrugadas y mesita de noche",
+    )
+    deltas = (SceneDelta(action="se sienta en el borde de la cama"),)
+    notes = continuity_notes(anchor, deltas, compose_sequence(anchor, deltas))
+    assert not any("repite" in n or "reescribe" in n for n in notes)
+
+
+def test_continuity_notes_flags_long_delta_rewriting_anchor():
+    """Un cambio largo que re-describe la escena sí arriesga deriva: avisa."""
+    anchor = ConsistencyAnchor(
+        subject="un hombre joven de pelo castaño",
+        wardrobe="camiseta gris de algodón",
+        setting="habitación de los 90 con póster y moqueta gris",
+    )
+    long_change = (
+        "un hombre joven de pelo castaño con camiseta gris de algodón sentado en una "
+        "habitación de los 90 con póster y moqueta gris mientras bosteza"
+    )
+    deltas = (SceneDelta(action="algo"), SceneDelta(action=long_change))
+    notes = continuity_notes(anchor, deltas, compose_sequence(anchor, deltas))
+    assert any("reescribe la biblia" in n for n in notes)
 
 
 def test_continuity_notes_flags_duplicate_scenes():
